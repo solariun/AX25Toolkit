@@ -30,9 +30,12 @@
 class Basic {
 public:
     // ── Host callbacks (set before run()) ─────────────────────────────────
-    std::function<void(const std::string&)>    on_send;  // PRINT / SEND output
-    std::function<std::string(int timeout_ms)> on_recv;  // INPUT / RECV input
-    std::function<void(const std::string&)>    on_log;   // error / debug log
+    std::function<void(const std::string&)>              on_send;      // PRINT / SEND output
+    std::function<std::string(int timeout_ms)>           on_recv;      // INPUT / RECV input
+    std::function<void(const std::string&)>              on_log;       // error / debug log
+    std::function<void(const std::string&)>              on_send_aprs; // SEND_APRS info$
+    std::function<void(const std::string&,               // SEND_UI dest$, text$
+                       const std::string&)>              on_send_ui;
 
     // ── Pre-defined variables ─────────────────────────────────────────────
     void set_str(const std::string& name, const std::string& val);
@@ -67,6 +70,9 @@ private:
     // ── FOR loop frame ────────────────────────────────────────────────────
     struct ForFrame { std::string var; double to, step; int body_line; };
 
+    // ── WHILE loop frame ─────────────────────────────────────────────────
+    struct WhileFrame { int cond_line; };
+
     // ── Lexer ─────────────────────────────────────────────────────────────
     struct Lexer {
         const std::string& src;
@@ -95,6 +101,7 @@ private:
     std::map<std::string, Value> vars_;
     std::vector<int>             call_stack_;  // GOSUB return addresses
     std::vector<ForFrame>        for_stack_;
+    std::vector<WhileFrame>      while_stack_;
     volatile bool                interrupted_;
 
     // SQLite handle (void* to avoid sqlite3.h in this header)
@@ -147,16 +154,24 @@ private:
     int cmd_for    (Lexer& lx, int ln);
     int cmd_next   (Lexer& lx, int ln);
     int cmd_sleep  (Lexer& lx, int ln);
-    int cmd_dbopen (Lexer& lx, int ln);
-    int cmd_dbclose(Lexer& lx, int ln);
-    int cmd_dbexec (Lexer& lx, int ln);
-    int cmd_dbquery(Lexer& lx, int ln);
-    int cmd_httpget(Lexer& lx, int ln);
-    int cmd_sockopen  (Lexer& lx, int ln);
-    int cmd_sockclose (Lexer& lx, int ln);
-    int cmd_socksend  (Lexer& lx, int ln);
-    int cmd_sockrecv  (Lexer& lx, int ln);
-    int cmd_exec   (Lexer& lx, int ln);
+    int cmd_dbopen     (Lexer& lx, int ln);
+    int cmd_dbclose    (Lexer& lx, int ln);
+    int cmd_dbexec     (Lexer& lx, int ln);
+    int cmd_dbquery    (Lexer& lx, int ln);
+    int cmd_dbfetchall (Lexer& lx, int ln);
+    int cmd_httpget    (Lexer& lx, int ln);
+    int cmd_sockopen   (Lexer& lx, int ln);
+    int cmd_sockclose  (Lexer& lx, int ln);
+    int cmd_socksend   (Lexer& lx, int ln);
+    int cmd_sockrecv   (Lexer& lx, int ln);
+    int cmd_exec       (Lexer& lx, int ln);
+    int cmd_while      (Lexer& lx, int ln);
+    int cmd_wend       (Lexer& lx, int ln);
+    int cmd_send_aprs  (Lexer& lx, int ln);
+    int cmd_send_ui    (Lexer& lx, int ln);
+
+    // ── Find matching WEND line (for WHILE-false skip) ────────────────────
+    int find_wend_line(int from_line);
 
     // ── System utilities ──────────────────────────────────────────────────
     static std::string http_get(const std::string& url);

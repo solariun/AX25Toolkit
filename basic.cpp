@@ -236,7 +236,7 @@ void Basic::set_num(const std::string& name, double val) {
 // ─────────────────────────────────────────────────────────────────────────────
 void Basic::clear() {
     program_.clear(); vars_.clear();
-    call_stack_.clear(); for_stack_.clear();
+    call_stack_.clear(); for_stack_.clear(); while_stack_.clear();
     interrupted_ = false;
 #ifdef HAVE_SQLITE3
     if (db_) { sqlite3_close((sqlite3*)db_); db_ = nullptr; }
@@ -374,6 +374,49 @@ Basic::Value Basic::eval_func(const std::string& fname, Lexer& lx) {
     if (fname == "SQR") {
         Value v = eval_expr(lx); lx.eat_ch(')');
         return Value(std::sqrt(v.to_num()));
+    }
+    if (fname == "RND") {
+        // RND() or RND(n) — returns random double [0,1) or [0,n)
+        lx.skip_ws();
+        double n = 1.0;
+        if (lx.peek_ch() != ')') { Value v = eval_expr(lx); n = v.to_num(); }
+        lx.eat_ch(')');
+        return Value(n * (std::rand() / (RAND_MAX + 1.0)));
+    }
+    if (fname == "LOG") {
+        Value v = eval_expr(lx); lx.eat_ch(')');
+        double x = v.to_num(); return Value(x > 0 ? std::log(x) : 0.0);
+    }
+    if (fname == "EXP") {
+        Value v = eval_expr(lx); lx.eat_ch(')');
+        return Value(std::exp(v.to_num()));
+    }
+    if (fname == "SIN") {
+        Value v = eval_expr(lx); lx.eat_ch(')');
+        return Value(std::sin(v.to_num()));
+    }
+    if (fname == "COS") {
+        Value v = eval_expr(lx); lx.eat_ch(')');
+        return Value(std::cos(v.to_num()));
+    }
+    if (fname == "TAN") {
+        Value v = eval_expr(lx); lx.eat_ch(')');
+        return Value(std::tan(v.to_num()));
+    }
+    if (fname == "SGN") {
+        Value v = eval_expr(lx); lx.eat_ch(')');
+        double x = v.to_num();
+        return Value(x > 0 ? 1.0 : (x < 0 ? -1.0 : 0.0));
+    }
+    if (fname == "MAX") {
+        Value a = eval_expr(lx); lx.eat_ch(',');
+        Value b = eval_expr(lx); lx.eat_ch(')');
+        return Value(a.to_num() >= b.to_num() ? a.to_num() : b.to_num());
+    }
+    if (fname == "MIN") {
+        Value a = eval_expr(lx); lx.eat_ch(',');
+        Value b = eval_expr(lx); lx.eat_ch(')');
+        return Value(a.to_num() <= b.to_num() ? a.to_num() : b.to_num());
     }
     // Unknown function -- skip args
     int depth = 1;
@@ -608,33 +651,52 @@ int Basic::cmd_if(Lexer& lx, int ln) {
     }
     lx.skip_ws();
     if (cond.to_bool()) {
-        // THEN branch: if next token is a number, GOTO that line
+        // THEN branch: if next token is a number, treat as GOTO
         if (std::isdigit((unsigned char)lx.peek_ch())) {
             Value v = eval_expr(lx);
             return (int)v.to_num();
         }
-        // Otherwise execute inline statement
-        int jmp = exec_stmt(lx, ln);
-        return jmp;
+        // Execute one or more colon-separated statements (stop at ELSE)
+        for (;;) {
+            lx.skip_ws();
+            if (lx.at_end() || lx.peek_kw("ELSE")) break;
+            int jmp = exec_stmt(lx, ln);
+            if (jmp != -1) return jmp;     // GOTO / END / RETURN
+            lx.skip_ws();
+            if (lx.peek_kw("ELSE") || lx.at_end()) break;
+            if (!lx.eat_ch(':')) break;    // no more colon-separated stmts
+        }
+        // Consume (skip) any trailing ELSE branch so caller doesn't re-exec it
+        if (lx.eat_kw("ELSE")) lx.pos = lx.src.size();
+        return -1;
     } else {
-        // Skip THEN branch, look for ELSE
+        // Skip THEN branch token by token until ELSE or end-of-line
         int depth = 0;
         while (!lx.at_end()) {
             lx.skip_ws();
             if (depth == 0 && lx.peek_kw("ELSE")) { lx.eat_kw("ELSE"); break; }
             char c = lx.peek_ch();
-            if (c == '(') { ++depth; lx.next_tok(); }
-            else if (c == ')') { if(depth>0) --depth; lx.next_tok(); }
-            else if (c == '"') { lx.next_tok(); } // skip string literal
-            else { lx.next_tok(); }
+            if      (c == '(') { ++depth; lx.next_tok(); }
+            else if (c == ')') { if (depth > 0) --depth; lx.next_tok(); }
+            else               { lx.next_tok(); }  // also handles string literals
         }
         if (lx.at_end()) return -1;  // no ELSE
         lx.skip_ws();
+        // ELSE with line number → GOTO
         if (std::isdigit((unsigned char)lx.peek_ch())) {
             Value v = eval_expr(lx);
             return (int)v.to_num();
         }
-        return exec_stmt(lx, ln);
+        // Execute one or more colon-separated statements in ELSE branch
+        for (;;) {
+            lx.skip_ws();
+            if (lx.at_end()) break;
+            int jmp = exec_stmt(lx, ln);
+            if (jmp != -1) return jmp;
+            lx.skip_ws();
+            if (lx.at_end() || !lx.eat_ch(':')) break;
+        }
+        return -1;
     }
 }
 
@@ -875,6 +937,106 @@ int Basic::cmd_exec(Lexer& lx, int) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WHILE / WEND
+// ─────────────────────────────────────────────────────────────────────────────
+int Basic::find_wend_line(int from_line) {
+    int depth = 1;
+    for (auto it = program_.upper_bound(from_line); it != program_.end(); ++it) {
+        Lexer lx2(it->second);
+        lx2.skip_ws();
+        if (lx2.eat_kw("WHILE")) { ++depth; }
+        else if (lx2.eat_kw("WEND")) {
+            if (--depth == 0) {
+                // Return line after WEND (or 0 for END if WEND is last)
+                auto nxt = it; ++nxt;
+                return (nxt != program_.end()) ? nxt->first : 0;
+            }
+        }
+    }
+    log("WHILE without matching WEND");
+    return 0;
+}
+
+int Basic::cmd_while(Lexer& lx, int ln) {
+    Value cond = eval_expr(lx);
+    if (cond.to_bool()) {
+        WhileFrame fr; fr.cond_line = ln;
+        while_stack_.push_back(fr);
+        return -1; // continue into body
+    }
+    return find_wend_line(ln); // skip to line after WEND
+}
+
+int Basic::cmd_wend(Lexer&, int) {
+    if (while_stack_.empty()) { log("WEND without WHILE"); return -1; }
+    int cond_line = while_stack_.back().cond_line;
+    while_stack_.pop_back();
+    return cond_line; // jump back to WHILE line to re-evaluate condition
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEND_APRS / SEND_UI
+// ─────────────────────────────────────────────────────────────────────────────
+int Basic::cmd_send_aprs(Lexer& lx, int) {
+    Value info = eval_expr(lx);
+    if (on_send_aprs) on_send_aprs(info.to_str());
+    else log("SEND_APRS: no on_send_aprs callback set");
+    return -1;
+}
+
+int Basic::cmd_send_ui(Lexer& lx, int) {
+    Value dest = eval_expr(lx); lx.eat_ch(',');
+    Value text = eval_expr(lx);
+    if (on_send_ui) on_send_ui(dest.to_str(), text.to_str());
+    else log("SEND_UI: no on_send_ui callback set");
+    return -1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DBFETCHALL — fetch all rows of a query into a string variable
+//   DBFETCHALL sql$, var$ [, col_sep$, row_sep$]
+//   Rows are separated by row_sep (default "\n"), columns by col_sep (default "\t")
+// ─────────────────────────────────────────────────────────────────────────────
+int Basic::cmd_dbfetchall(Lexer& lx, int) {
+#ifdef HAVE_SQLITE3
+    if (!db_) { log("DBFETCHALL: no open database"); return -1; }
+    Value sql = eval_expr(lx);
+    lx.skip_ws(); lx.eat_ch(',');
+    auto tok = lx.next_tok();
+    std::string varname = tok.text;
+    std::string col_sep = "\t", row_sep = "\n";
+    if (lx.eat_ch(',')) { Value cs = eval_expr(lx); col_sep = cs.to_str(); }
+    if (lx.eat_ch(',')) { Value rs = eval_expr(lx); row_sep = rs.to_str(); }
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2((sqlite3*)db_, sql.to_str().c_str(), -1, &stmt, nullptr);
+    std::string result;
+    if (rc == SQLITE_OK && stmt) {
+        bool first_row = true;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            if (!first_row) result += row_sep;
+            first_row = false;
+            int ncols = sqlite3_column_count(stmt);
+            for (int c = 0; c < ncols; ++c) {
+                if (c > 0) result += col_sep;
+                const char* txt = (const char*)sqlite3_column_text(stmt, c);
+                if (txt) result += txt;
+            }
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        log(std::string("DBFETCHALL error: ") + sqlite3_errmsg((sqlite3*)db_));
+    }
+    if (is_str_var(varname)) set_var(varname, Value(result));
+    else { try { set_var(varname, Value(std::stod(result))); } catch(...) { set_var(varname, Value(0.0)); } }
+#else
+    (void)lx;
+    log("DBFETCHALL: SQLite not compiled in");
+#endif
+    return -1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Statement dispatcher
 // ─────────────────────────────────────────────────────────────────────────────
 int Basic::exec_stmt(Lexer& lx, int linenum) {
@@ -901,16 +1063,21 @@ int Basic::exec_stmt(Lexer& lx, int linenum) {
     if (kw == "NEXT")   { lx.next_tok(); return cmd_next(lx, linenum); }
     if (kw == "SLEEP")  { lx.next_tok(); return cmd_sleep(lx, linenum); }
     if (kw == "END" || kw == "STOP") { return 0; }
-    if (kw == "DBOPEN")   { lx.next_tok(); return cmd_dbopen(lx, linenum); }
-    if (kw == "DBCLOSE")  { lx.next_tok(); return cmd_dbclose(lx, linenum); }
-    if (kw == "DBEXEC")   { lx.next_tok(); return cmd_dbexec(lx, linenum); }
-    if (kw == "DBQUERY")  { lx.next_tok(); return cmd_dbquery(lx, linenum); }
-    if (kw == "HTTPGET")  { lx.next_tok(); return cmd_httpget(lx, linenum); }
-    if (kw == "SOCKOPEN") { lx.next_tok(); return cmd_sockopen(lx, linenum); }
-    if (kw == "SOCKCLOSE"){ lx.next_tok(); return cmd_sockclose(lx, linenum); }
-    if (kw == "SOCKSEND") { lx.next_tok(); return cmd_socksend(lx, linenum); }
-    if (kw == "SOCKRECV") { lx.next_tok(); return cmd_sockrecv(lx, linenum); }
-    if (kw == "EXEC")     { lx.next_tok(); return cmd_exec(lx, linenum); }
+    if (kw == "DBOPEN")      { lx.next_tok(); return cmd_dbopen(lx, linenum); }
+    if (kw == "DBCLOSE")     { lx.next_tok(); return cmd_dbclose(lx, linenum); }
+    if (kw == "DBEXEC")      { lx.next_tok(); return cmd_dbexec(lx, linenum); }
+    if (kw == "DBQUERY")     { lx.next_tok(); return cmd_dbquery(lx, linenum); }
+    if (kw == "DBFETCHALL")  { lx.next_tok(); return cmd_dbfetchall(lx, linenum); }
+    if (kw == "HTTPGET")     { lx.next_tok(); return cmd_httpget(lx, linenum); }
+    if (kw == "SOCKOPEN")    { lx.next_tok(); return cmd_sockopen(lx, linenum); }
+    if (kw == "SOCKCLOSE")   { lx.next_tok(); return cmd_sockclose(lx, linenum); }
+    if (kw == "SOCKSEND")    { lx.next_tok(); return cmd_socksend(lx, linenum); }
+    if (kw == "SOCKRECV")    { lx.next_tok(); return cmd_sockrecv(lx, linenum); }
+    if (kw == "EXEC")        { lx.next_tok(); return cmd_exec(lx, linenum); }
+    if (kw == "WHILE")       { lx.next_tok(); return cmd_while(lx, linenum); }
+    if (kw == "WEND")        { lx.next_tok(); return cmd_wend(lx, linenum); }
+    if (kw == "SEND_APRS")   { lx.next_tok(); return cmd_send_aprs(lx, linenum); }
+    if (kw == "SEND_UI")     { lx.next_tok(); return cmd_send_ui(lx, linenum); }
 
     // Assignment without LET: VARNAME = expr
     if (tok.kind == Lexer::IDENT) {

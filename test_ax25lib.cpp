@@ -835,6 +835,143 @@ TEST(BasicInterp, ExecTimeout) {
     EXPECT_NE(output.find("TIMEOUT"), std::string::npos);
 }
 
+// =============================================================================
+// 10. BASIC — new features: WHILE/WEND, SEND_APRS, SEND_UI, math, multi-stmt IF
+// =============================================================================
+
+// ── tokenize_args (replicated inline for testing) ─────────────────────────
+static std::vector<std::string> tok_args(const std::string& line) {
+    std::vector<std::string> args;
+    std::size_t i = 0;
+    while (i < line.size()) {
+        while (i < line.size() && std::isspace((unsigned char)line[i])) ++i;
+        if (i >= line.size()) break;
+        std::string token;
+        if (line[i] == '"' || line[i] == '\'') {
+            char d = line[i++];
+            while (i < line.size() && line[i] != d) token += line[i++];
+            if (i < line.size()) ++i;
+        } else {
+            while (i < line.size() && !std::isspace((unsigned char)line[i])) token += line[i++];
+        }
+        if (!token.empty()) args.push_back(token);
+    }
+    return args;
+}
+
+TEST(TokenizeArgs, Basic) {
+    auto v = tok_args("FOO BAR BAZ");
+    ASSERT_EQ(v.size(), 3u);
+    EXPECT_EQ(v[0], "FOO");
+    EXPECT_EQ(v[1], "BAR");
+    EXPECT_EQ(v[2], "BAZ");
+}
+
+TEST(TokenizeArgs, QuotedDoubleQuote) {
+    auto v = tok_args("CMD ARG1 \"hello world\" ARG3");
+    ASSERT_EQ(v.size(), 4u);
+    EXPECT_EQ(v[2], "hello world");
+    EXPECT_EQ(v[3], "ARG3");
+}
+
+TEST(TokenizeArgs, QuotedSingleQuote) {
+    auto v = tok_args("CMD 'two words' end");
+    ASSERT_EQ(v.size(), 3u);
+    EXPECT_EQ(v[1], "two words");
+}
+
+TEST(TokenizeArgs, EmptyString) {
+    auto v = tok_args("   ");
+    EXPECT_TRUE(v.empty());
+}
+
+TEST(BasicInterp, WhileWend) {
+    std::string out = run_basic(
+        "10 I = 1\n"
+        "20 WHILE I <= 3\n"
+        "30   PRINT STR$(I)\n"
+        "40   I = I + 1\n"
+        "50 WEND\n"
+        "60 PRINT \"done\"\n"
+    );
+    EXPECT_NE(out.find("1"), std::string::npos);
+    EXPECT_NE(out.find("2"), std::string::npos);
+    EXPECT_NE(out.find("3"), std::string::npos);
+    EXPECT_NE(out.find("done"), std::string::npos);
+    // 4 must not appear
+    EXPECT_EQ(out.find("4\r\n"), std::string::npos);
+}
+
+TEST(BasicInterp, WhileWendZeroIter) {
+    // Condition false from start — body never executes
+    std::string out = run_basic(
+        "10 WHILE 0\n"
+        "20 PRINT \"never\"\n"
+        "30 WEND\n"
+        "40 PRINT \"after\"\n"
+    );
+    EXPECT_EQ(out.find("never"), std::string::npos);
+    EXPECT_NE(out.find("after"), std::string::npos);
+}
+
+TEST(BasicInterp, SendAprs) {
+    Basic interp;
+    std::string aprs_info;
+    std::string output;
+    interp.on_send = [&](const std::string& s) { output += s; };
+    interp.on_recv = [](int) -> std::string { return ""; };
+    interp.on_send_aprs = [&](const std::string& info) { aprs_info = info; };
+    interp.load_string("10 SEND_APRS \"!1234.00N/00123.00W>test\"");
+    interp.run();
+    EXPECT_EQ(aprs_info, "!1234.00N/00123.00W>test");
+}
+
+TEST(BasicInterp, SendUi) {
+    Basic interp;
+    std::string ui_dest, ui_text;
+    interp.on_send = [](const std::string&) {};
+    interp.on_recv = [](int) -> std::string { return ""; };
+    interp.on_send_ui = [&](const std::string& d, const std::string& t) {
+        ui_dest = d; ui_text = t;
+    };
+    interp.load_string("10 SEND_UI \"APRS\", \"hello rf\"");
+    interp.run();
+    EXPECT_EQ(ui_dest, "APRS");
+    EXPECT_EQ(ui_text, "hello rf");
+}
+
+TEST(BasicInterp, MathFunctions) {
+    // ABS, SQR, INT
+    std::string out = run_basic(
+        "10 PRINT ABS(-5)\n"
+        "20 PRINT SQR(9)\n"
+        "30 PRINT INT(3.9)\n"
+    );
+    EXPECT_NE(out.find("5"), std::string::npos);
+    EXPECT_NE(out.find("3"), std::string::npos);
+}
+
+TEST(BasicInterp, MultiStmtIfThen) {
+    // Multiple colon-separated statements in THEN branch
+    std::string out = run_basic(
+        "10 X = 10\n"
+        "20 IF X > 5 THEN A$ = \"big\" : PRINT A$\n"
+        "30 IF X < 5 THEN PRINT \"small\"\n"
+    );
+    EXPECT_NE(out.find("big"), std::string::npos);
+    EXPECT_EQ(out.find("small"), std::string::npos);
+}
+
+TEST(BasicInterp, MultiStmtIfElse) {
+    std::string out = run_basic(
+        "10 X = 2\n"
+        "20 IF X > 5 THEN PRINT \"yes\" : PRINT \"big\" ELSE PRINT \"no\" : PRINT \"small\"\n"
+    );
+    EXPECT_EQ(out.find("yes"), std::string::npos);
+    EXPECT_NE(out.find("no"), std::string::npos);
+    EXPECT_NE(out.find("small"), std::string::npos);
+}
+
 // Main — GoogleTest entry point
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

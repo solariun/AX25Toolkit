@@ -5,7 +5,7 @@
 A self-contained C++11 library implementing the AX.25 amateur-radio link-layer
 protocol over KISS-mode TNCs.  Includes a full-featured BBS with INI config,
 a Tiny BASIC scripting engine (SQLite · TCP sockets · HTTP GET · shell exec),
-remote shell access, an interactive KISS terminal, and a 57-test GoogleTest suite.
+remote shell access, an interactive KISS terminal, and a 68-test GoogleTest suite.
 
 ---
 
@@ -459,7 +459,7 @@ sudo dnf install gtest-devel sqlite-devel
 
 ```bash
 make          # build bbs and ax25kiss binaries
-make test     # compile and run all 57 unit tests
+make test     # compile and run all 68 unit tests
 make clean    # remove all build artefacts
 ```
 
@@ -706,9 +706,9 @@ make test
 Expected output:
 
 ```
-[==========] Running 57 tests from 10 test suites.
+[==========] Running 68 tests from 11 test suites.
 ...
-[  PASSED  ] 57 tests.
+[  PASSED  ] 68 tests.
 ```
 
 ### Test suites
@@ -724,7 +724,8 @@ Expected output:
 | `RouterUI` | 2 | UI send/receive, APRS broadcast (fires on_ui regardless of dest) |
 | `Timers` | 1 | T1 retransmit leading to link failure after N2 retries |
 | `IniConfig` | 4 | Load file, missing file, inline comments, bool/double getters |
-| `BasicInterp` | 10 | PRINT, arithmetic, string concat, IF/THEN/ELSE, FOR/NEXT, GOSUB/RETURN, string functions, EXEC, EXEC timeout |
+| `BasicInterp` | 17 | PRINT, arithmetic, string concat, IF/THEN/ELSE multi-stmt, FOR/NEXT, WHILE/WEND, GOSUB/RETURN, string functions, EXEC, EXEC timeout, SEND_APRS, SEND_UI, math |
+| `TokenizeArgs` | 4 | Plain args, double-quoted args, single-quoted args, empty input |
 
 ---
 
@@ -777,7 +778,7 @@ One-shot modes:
 
 | Command | Description |
 |---------|-------------|
-| `H` / `?` | Help |
+| `H` / `?` | Help — lists built-ins and `[commands]` entries |
 | `U` | List connected users |
 | `M <CALL> <msg>` | Send in-BBS message to a connected user |
 | `UI <DEST> <text>` | Send a raw UI frame over the air |
@@ -785,11 +786,43 @@ One-shot modes:
 | `AMSG <CALL> <msg>` | Send an APRS message to any callsign |
 | `I` | BBS and station info |
 | `B` | Send APRS beacon immediately |
-| `SH` | Open a remote shell (PTY bridge, escape `~.` to exit) |
+| `W` | Show who is logged in + system uptime (`w` command) |
+| `PS` | List running processes (`ps aux`) |
+| `DIR` | Directory listing of current directory (`ls -la`) |
+| `SHELL` | Interactive shell with piped stdin/stdout; stderr → `/tmp/bbs_cmd.log` |
+| `SH` | Open a PTY-bridged shell (escape `~.` to exit) |
 | `BYE` / `Q` | Disconnect |
+| _any [args]_ | Dispatched via `[commands]` section of `bbs.ini` |
+
+Quoted arguments are fully supported: `CMD ARG1 "two words" ARG3`.
 
 All connected users see incoming UI and APRS traffic in real time.
 Incoming APRS messages addressed to a connected user are automatically routed to their session.
+
+### `[commands]` section
+
+The `[commands]` INI section maps command names to either a `.bas` script or an
+external shell command line.  Arguments typed by the user are appended
+(single/double-quoted arguments supported).
+
+```ini
+[commands]
+; Scripts run under the Tiny BASIC interpreter.
+; stdin/stdout are wired to the AX.25 session.
+welcome = welcome.bas      ; called automatically on connect
+email   = email.bas        ; BBS email system
+
+; External commands: stdin/stdout piped to session; stderr → /tmp/bbs_cmd.log
+shell   = /bin/bash        ; interactive shell
+w       = w                ; who/uptime  (default)
+ps      = ps aux           ; process list (default)
+dir     = ls -la           ; directory   (default)
+weather = curl -s "wttr.in/?format=3"
+```
+
+`welcome` is the only reserved name — it is run automatically when a user
+connects instead of the built-in banner.  All other names are invoked by the
+user typing the command at the `Email>` (or BBS) prompt.
 
 ---
 
@@ -932,11 +965,22 @@ bbs.ini → welcome_script = welcome.bas
 ```basic
 10 IF X > 5 THEN PRINT "big" ELSE PRINT "small"
 20 IF A$ = "BYE" THEN GOTO 999
+25 IF X = 1 THEN A = 1 : B = 2 : C = 3   ' multiple colon-separated stmts in THEN
+
 30 GOSUB 500         : REM call subroutine at line 500
+
 40 FOR I = 1 TO 10 STEP 2
 50   PRINT I
 60 NEXT I
-70 END
+
+65 DONE = 0
+70 WHILE DONE = 0      ' WHILE / WEND loop (nested WHILE supported)
+80   RECV cmd$, 60000
+90   IF UPPER$(cmd$) = "QUIT" THEN DONE = 1
+100  IF DONE = 0 THEN PRINT "You said: " + cmd$
+110 WEND
+
+120 END
 500 PRINT "in sub"
 510 RETURN
 999 PRINT "bye!" : END
@@ -950,6 +994,16 @@ bbs.ini → welcome_script = welcome.bas
 30 SEND "Hello " + name$ + "!"  ' alias for PRINT
 40 RECV reply$, 15000           ' receive with 15-second timeout
 ```
+
+#### APRS / UI — transmit over the air
+
+```basic
+10 SEND_APRS "!1234.00N/00567.00W>Hello from BASIC"
+20 SEND_UI "APRS", "de W1BBS: status update"
+```
+
+`SEND_APRS info$` — transmits an APRS UI frame via the router's callsign.
+`SEND_UI dest$, text$` — transmits a raw UI frame to the given destination (PID `0xF0`).
 
 #### System — run external commands
 
@@ -968,8 +1022,10 @@ bbs.ini → welcome_script = welcome.bas
 10 DBOPEN "bbs.db"
 20 DBEXEC "CREATE TABLE IF NOT EXISTS msgs (id INTEGER PRIMARY KEY, txt TEXT)"
 30 DBEXEC "INSERT INTO msgs (txt) VALUES ('hello')"
-40 DBQUERY "SELECT COUNT(*) FROM msgs", count$
+40 DBQUERY "SELECT COUNT(*) FROM msgs", count$        ' first column, first row
 50 PRINT "Total messages: " + count$
+55 DBFETCHALL "SELECT id, txt FROM msgs", all$        ' tab-cols, newline-rows
+56 DBFETCHALL "SELECT id, txt FROM msgs", all$, "|", "~" ' custom separators
 60 DBCLOSE
 ```
 
@@ -1013,7 +1069,8 @@ bbs.ini → welcome_script = welcome.bas
 
 #### Math functions
 
-`INT(x)` · `ABS(x)` · `SQR(x)`
+`INT(x)` · `ABS(x)` · `SQR(x)` · `RND([n])` · `LOG(x)` · `EXP(x)`
+`SIN(x)` · `COS(x)` · `TAN(x)` · `SGN(x)` · `MAX(a,b)` · `MIN(a,b)`
 
 ### Pre-defined variables
 
@@ -1024,6 +1081,13 @@ The BBS sets these before running your script:
 | `callsign$` | Remote station callsign (e.g. `"W1AW-7"`) |
 | `bbs_name$` | BBS name from config or `-n` flag |
 | `db_path$` | SQLite database path from `[basic] database` |
+| `arg0$` | Command name that triggered the script |
+| `arg1$`, `arg2$`, … | Additional arguments typed by the user |
+| `argc` | Total argument count (includes `arg0$`) |
+
+Scripts can receive user-supplied arguments.  Example: if `bbs.ini` has
+`[commands] hello = hello.bas` and the user types `HELLO W1AW greetings`,
+then `arg0$ = "HELLO"`, `arg1$ = "W1AW"`, `arg2$ = "greetings"`, `argc = 3`.
 
 ### Complete BBS script example
 
@@ -1059,6 +1123,47 @@ The BBS sets these before running your script:
 920 RETURN
 ```
 
+### BBS Email system (`email.bas`)
+
+`email.bas` is a ready-to-use SQLite-backed BBS email script.  Add it to
+`bbs.ini` under `[commands]` and users can send/receive messages over AX.25:
+
+```ini
+[commands]
+email = email.bas
+```
+
+User session example:
+
+```
+Email> LIST
+ Messages for W1AW-7: 3 total, 1 unread
+  ID  N  FROM         DATE              SUBJECT
+ ----+--+------------+-----------------+---------------------
+   3  *  KD9ABC       2026-03-10 14:22  73 from the field
+   2     W1BBS        2026-03-09 09:10  Re: Test message
+   1     N0CALL       2026-03-08 17:00  Welcome!
+
+Email> READ 3
+--- Message #3 ---
+From   : KD9ABC
+Date   : 2026-03-10 14:22:11
+Subject: 73 from the field
+---
+Hi there!  Hope all is well.  73 de KD9ABC
+---
+
+Email> COMPOSE W5XYZ "ARDF this weekend?"
+Composing to W5XYZ / Subject: ARDF this weekend?
+Enter body (. alone to send, CANCEL to abort):
+> Let me know if you're joining us Saturday.
+> .
+Message sent to W5XYZ.
+
+Email> QUIT
+Goodbye from BBS Email!
+```
+
 ### Embedding `Basic` in your own application
 
 ```cpp
@@ -1068,13 +1173,21 @@ Basic interp;
 
 // Wire I/O to your transport
 interp.on_send = [&](const std::string& s) {
-    conn->send(s);                        // send to AX.25 connection
+    conn->send(s);                         // send to AX.25 connection
 };
 interp.on_recv = [&](int timeout_ms) -> std::string {
-    return read_line_with_timeout(timeout_ms); // blocking read with timeout
+    return read_line_with_timeout(timeout_ms);  // blocking read with timeout
 };
 interp.on_log = [](const std::string& msg) {
     std::cerr << "[BASIC] " << msg << "\n";
+};
+
+// Optional: APRS/UI transmit callbacks (used by SEND_APRS / SEND_UI)
+interp.on_send_aprs = [&](const std::string& info) {
+    router.send_aprs(info);
+};
+interp.on_send_ui = [&](const std::string& dest, const std::string& text) {
+    router.send_ui(ax25::Addr::make(dest), 0xF0, text);
 };
 
 // Pre-fill variables

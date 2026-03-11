@@ -1,8 +1,17 @@
-10 REM Welcome script for KISSBBS
-20 PRINT "*** " + bbs_name$ + " AX.25 BBS ***"
-30 PRINT "Welcome " + callsign$ + "!"
-40 PRINT ""
-50 PRINT "Commands: H=Help  U=Users  M=Message  SH=Shell  BYE=Quit"
-60 PRINT "APRS:     POS=Position  AMSG=APRSMsg  B=Beacon"
-70 PRINT ""
-80 END
+10  REM Welcome script for KISSBBS
+20  PRINT "*** " + bbs_name$ + " AX.25 BBS ***"
+30  PRINT "Welcome, " + callsign$ + "!"
+40  PRINT ""
+50  PRINT "Built-in commands:"
+60  PRINT "  H/?   Help           U     Users online"
+70  PRINT "  M <CALL> <msg>       I     BBS info"
+80  PRINT "  UI <DEST> <txt>      B     Send APRS beacon"
+90  PRINT "  POS <lat> <lon>      AMSG <CALL> <msg>"
+100 PRINT "  W     Who/uptime     PS    Process list"
+110 PRINT "  DIR   Directory      SH    PTY shell"
+120 PRINT "  SHELL Interactive shell     BYE/Q  Quit"
+130 PRINT ""
+140 PRINT "Script commands (type name to run):"
+150 PRINT "  EMAIL  BBS email system"
+160 PRINT ""
+170 END
