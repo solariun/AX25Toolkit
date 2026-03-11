@@ -2,11 +2,14 @@
 # CI — Build + Test on every push and pull request
 #
 # Matrix:
-#   Ubuntu 22.04  — g++  (C++11 library, C++17 test binary)
-#   Ubuntu 22.04  — clang++ (same flags)
-#   macOS latest  — Apple Clang
+#   Ubuntu 22.04  — g++      (C++11 library, C++17 test binary)
+#   Ubuntu 22.04  — clang++  (same flags)
+#   macOS latest  — clang++  (Apple Clang; GoogleTest from Homebrew uses libc++)
 #
-# GoogleTest is installed from the distro package manager / Homebrew.
+# NOTE on macOS ABI: the GoogleTest bottle from Homebrew is compiled with
+# Apple Clang (libc++).  Linking it with Homebrew GCC (libstdc++) produces
+# undefined symbol errors.  We therefore use clang++ on macOS for the test
+# binary, while the library itself is compiled with the matrix compiler.
 # =============================================================================
 name: CI
 
@@ -30,7 +33,7 @@ jobs:
           - os: ubuntu-22.04
             compiler: clang++
           - os: macos-latest
-            compiler: g++   # Homebrew GCC (avoids Apple Clang quirks)
+            compiler: clang++   # Apple Clang matches Homebrew GoogleTest ABI
 
     steps:
       # ── Checkout ────────────────────────────────────────────────────────────
@@ -42,49 +45,27 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libgtest-dev cmake
-          # On Ubuntu 22.04 libgtest-dev ships pre-compiled
-          # If not: cd /usr/src/gtest && sudo cmake . && sudo make && sudo cp lib/*.a /usr/lib
+          sudo apt-get install -y libgtest-dev
 
-      # ── Install GoogleTest + GCC (macOS) ────────────────────────────────────
-      - name: Install dependencies (macOS)
+      # ── Install GoogleTest (macOS) ───────────────────────────────────────────
+      - name: Install GoogleTest (macOS)
         if: runner.os == 'macOS'
-        run: |
-          brew install googletest gcc
-          # Make sure Homebrew GCC is on PATH as 'g++'
-          GCC_BIN=$(ls /opt/homebrew/bin/g++-* 2>/dev/null | sort -V | tail -1)
-          if [ -z "$GCC_BIN" ]; then
-            GCC_BIN=$(ls /usr/local/bin/g++-* 2>/dev/null | sort -V | tail -1)
-          fi
-          echo "GCC_BIN=$GCC_BIN" >> $GITHUB_ENV
+        run: brew install googletest
 
       # ── Build library + binaries with C++11 ─────────────────────────────────
       - name: Build (C++11)
-        env:
-          CXX: ${{ matrix.compiler }}
-        run: |
-          # On macOS with the gcc matrix entry, use the versioned binary
-          if [ "$RUNNER_OS" = "macOS" ] && [ -n "$GCC_BIN" ]; then
-            export CXX="$GCC_BIN"
-          fi
-          make all CXX="$CXX" 2>&1
+        run: make all CXX=${{ matrix.compiler }}
 
-      # ── Compile & run all unit tests ─────────────────────────────────────────
+      # ── Compile & run all 43 unit tests ──────────────────────────────────────
       - name: Test
-        env:
-          CXX: ${{ matrix.compiler }}
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ] && [ -n "$GCC_BIN" ]; then
-            export CXX="$GCC_BIN"
-          fi
-          make test CXX="$CXX" 2>&1
+        run: make test CXX=${{ matrix.compiler }}
 
-      # ── Upload test results on failure ───────────────────────────────────────
-      - name: Upload test log on failure
+      # ── Upload binary on failure for post-mortem ─────────────────────────────
+      - name: Upload test binary on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: test-failure-${{ matrix.os }}-${{ matrix.compiler }}
-          path: |
-            test_ax25lib
+          path: test_ax25lib
           retention-days: 7
+          if-no-files-found: ignore
