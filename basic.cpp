@@ -274,6 +274,7 @@ void Basic::clear() {
     call_stack_.clear(); for_stack_.clear(); while_stack_.clear();
     if_stack_.clear(); do_stack_.clear(); select_stack_.clear();
     frame_stack_.clear();
+    maps_.clear(); queues_.clear(); arrays_.clear();
     next_auto_line_ = 1;
     interrupted_ = false;
 #ifdef HAVE_SQLITE3
@@ -972,6 +973,17 @@ Basic::Value Basic::eval_func(const std::string& fname, Lexer& lx) {
         } catch (...) {}
         return Value(0.0);
     }
+    // ── ARRAY functions ────────────────────────────────────────────────────────
+    // ARRAY_SIZE(arrname$) → number of elements stored in the named array
+    if (fname == "ARRAY_SIZE") {
+        Value nm = eval_expr(lx); lx.eat_ch(')');
+        std::string aname = nm.to_str();
+        // The lexer uppercases names; accept both forms
+        for (auto& c : aname) c = static_cast<char>(std::toupper((unsigned char)c));
+        auto it = maps_.find(aname);
+        return Value(it != maps_.end() ? (double)it->second.size() : 0.0);
+    }
+
     // ── MAP functions (MAP_HAS, MAP_SIZE) ─────────────────────────────────────
     if (fname == "MAP_HAS") {
         Value nm  = eval_expr(lx); lx.eat_ch(',');
@@ -1032,7 +1044,17 @@ Basic::Value Basic::eval_primary(Lexer& lx) {
     if (tok.kind == Lexer::IDENT) {
         lx.next_tok();
         std::string name = tok.text;
-        // Function call?
+        // Array element access: arr(idx) — takes priority over function calls
+        if (lx.peek_ch() == '(' && arrays_.count(name)) {
+            lx.eat_ch('(');
+            Value idx = eval_expr(lx);
+            lx.eat_ch(')');
+            auto& m = maps_[name];
+            auto  it = m.find(idx.to_str());
+            if (it != m.end()) return it->second;
+            return is_str_var(name) ? Value(std::string("")) : Value(0.0);
+        }
+        // Function call (built-in or user-defined)?
         if (lx.peek_ch() == '(') return eval_func(name, lx);
         // struct field: name.field
         lx.skip_ws();
@@ -1375,8 +1397,70 @@ int Basic::cmd_for(Lexer& lx, int ln) {
     auto tok = lx.next_tok();
     std::string var = tok.text;
 
-    // ── FOR var$ IN src$ MATCH pat$ — regex match iterator ─────────────────
+    // ── FOR var IN arrname — array iterator ────────────────────────────────
     if (lx.eat_kw("IN")) {
+        lx.skip_ws();
+        // Peek: is the next token a known array name NOT followed by MATCH?
+        auto arr_tok = lx.peek_tok();
+        if (arr_tok.kind == Lexer::IDENT && arrays_.count(arr_tok.text)) {
+            std::size_t saved = lx.pos;
+            lx.next_tok(); // consume array name
+            lx.skip_ws();
+            if (!lx.peek_kw("MATCH")) {
+                // Array iteration path
+                std::string arrname = arr_tok.text;
+                auto& m = maps_[arrname];
+
+                // Collect values: numeric keys sorted ascending, then string keys
+                std::vector<std::pair<std::string,Value>> entries(m.begin(), m.end());
+                // Sort: all-digit keys numerically, mixed keys lexicographically
+                std::sort(entries.begin(), entries.end(),
+                    [](const std::pair<std::string,Value>& a,
+                       const std::pair<std::string,Value>& b) {
+                        bool an = !a.first.empty() &&
+                                  a.first.find_first_not_of("0123456789") == std::string::npos;
+                        bool bn = !b.first.empty() &&
+                                  b.first.find_first_not_of("0123456789") == std::string::npos;
+                        if (an && bn) return std::stoll(a.first) < std::stoll(b.first);
+                        return a.first < b.first;
+                    });
+
+                std::vector<std::string> matches;
+                matches.reserve(entries.size());
+                for (auto& kv : entries) matches.push_back(kv.second.to_str());
+
+                auto prog_it = program_.find(ln);
+                int body = 0;
+                if (prog_it != program_.end()) {
+                    ++prog_it;
+                    if (prog_it != program_.end()) body = prog_it->first;
+                }
+
+                if (matches.empty()) {
+                    int nxt = find_next_line(var, ln);
+                    if (nxt > 0) {
+                        auto it2 = program_.upper_bound(nxt);
+                        return it2 != program_.end() ? it2->first : 0;
+                    }
+                    return 0;
+                }
+
+                ForFrame fr;
+                fr.var       = var;
+                fr.to        = 0; fr.step = 0;
+                fr.body_line = body;
+                fr.is_match  = true;
+                fr.matches   = std::move(matches);
+                fr.match_idx = 0;
+                set_var(var, Value(fr.matches[0]));
+                for_stack_.push_back(std::move(fr));
+                return -1;
+            }
+            // Has MATCH → fall through to regex path (restore to after arr_tok)
+            lx.pos = saved;
+        }
+
+        // ── FOR var$ IN src$ MATCH pat$ — regex match iterator ───────────────
         Value src = eval_expr(lx);
         if (!lx.eat_kw("MATCH")) {
             log("FOR IN: expected MATCH on line " + std::to_string(ln));
@@ -1794,10 +1878,25 @@ int Basic::cmd_dim(Lexer& lx, int) {
         auto tok = lx.next_tok();
         if (tok.kind != Lexer::IDENT) break;
         std::string vname = tok.text;
-        // Handle array notation: DIM a(n) — just register, no real arrays
+        // ── Array declaration: DIM arr(n) — backed by maps_ ─────────────────
         if (lx.eat_ch('(')) {
-            while (!lx.at_end() && lx.peek_ch()!=')') lx.next_tok();
+            // Evaluate size expression (may be multi-dimensional: ignore extras)
+            Value sz = eval_expr(lx);
+            while (lx.eat_ch(',')) eval_expr(lx); // consume extra dimensions
             lx.eat_ch(')');
+            // Register as array (canonical uppercase name is already done by lexer)
+            arrays_.insert(vname);
+            // Pre-initialise slots 0..n so the map has correct size
+            int n = (int)sz.to_num();
+            if (n < 0) n = 0;
+            auto& m = maps_[vname];
+            for (int i = 0; i <= n; ++i) {
+                std::string k = std::to_string(i);
+                if (m.find(k) == m.end())
+                    m[k] = is_str_var(vname) ? Value(std::string("")) : Value(0.0);
+            }
+            if (!lx.eat_ch(',')) break;
+            continue;
         }
         // Optional AS type
         if (lx.eat_kw("AS")) {
@@ -2282,13 +2381,37 @@ int Basic::exec_stmt(Lexer& lx, int linenum) {
     if (kw=="QUEUE_PEEK")  { lx.next_tok(); return cmd_queue_peek (lx, linenum); }
     if (kw=="QUEUE_CLEAR") { lx.next_tok(); return cmd_queue_clear(lx, linenum); }
 
-    // ── Assignment without LET: VARNAME [.FIELD] = expr ──────────────────
+    // ── Assignment without LET: VARNAME [.FIELD|(IDX)] = expr ───────────
     // (Must come before implicit SUB call so "FuncName = val" sets return value)
     if (tok.kind == Lexer::IDENT) {
         std::string varname = kw;
         std::size_t saved_pos = lx.pos;
         lx.next_tok(); // consume identifier
         lx.skip_ws();
+
+        // ── Array element assignment: arr(idx) = val ─────────────────────
+        // Try the array path optimistically: if we find (expr) = ... it is
+        // definitely an array write, even when the name is also a proc name
+        // (FUNCTION can populate an array named after itself for multi-value
+        // returns: funcname$(i) = val inside END FUNCTION body).
+        if (lx.peek_ch() == '(') {
+            std::size_t paren_pos = lx.pos;
+            lx.eat_ch('(');
+            Value idx = eval_expr(lx);
+            bool closed = lx.eat_ch(')');
+            lx.skip_ws();
+            if (closed && lx.peek_ch() == '=') {
+                lx.eat_ch('=');
+                Value v = eval_expr(lx);
+                // Auto-register as array on first assignment
+                arrays_.insert(varname);
+                maps_[varname][idx.to_str()] = std::move(v);
+                return -1;
+            }
+            // Not an array assignment (e.g. a function call used as stmt) — restore
+            lx.pos = paren_pos;
+        }
+
         std::string fullname = varname;
         if (lx.peek_ch() == '.') {
             lx.eat_ch('.');

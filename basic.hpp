@@ -28,6 +28,12 @@
 //               INT(), ABS(), SQR(), RND(), LOG(), EXP(),
 //               SIN(), COS(), TAN(), SGN(), MAX(), MIN()
 //               REMATCH(), REFIND$(), REALL$(), RESUB$(), RESUBALL$(), REGROUP$(), RECOUNT()
+//   Arrays:     DIM arr(n)           declare numeric array with n+1 slots (0..n)
+//               DIM arr$(n)          declare string array
+//               arr(i) = value       write element by numeric or string key
+//               x = arr(i)          read element
+//               FOR x IN arr         iterate all array values (numeric keys ascending)
+//               ARRAY_SIZE(arr$)     number of elements in named array
 //   Collections: MAP_SET, MAP_GET, MAP_HAS(), MAP_DEL, MAP_KEYS, MAP_SIZE(), MAP_CLEAR
 //               QUEUE_PUSH, QUEUE_POP, QUEUE_PEEK, QUEUE_SIZE(), QUEUE_EMPTY(), QUEUE_CLEAR
 //
@@ -43,6 +49,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -205,6 +212,9 @@ private:
     // Named collections: MAP (string→Value) and QUEUE (FIFO of Values)
     std::map<std::string, std::map<std::string, Value>> maps_;
     std::map<std::string, std::deque<Value>>             queues_;
+
+    // Arrays: names of variables declared as DIM arr(n); backed by maps_
+    std::set<std::string> arrays_;
 
     Basic(const Basic&);
     Basic& operator=(const Basic&);

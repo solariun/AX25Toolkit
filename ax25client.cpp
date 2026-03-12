@@ -35,6 +35,8 @@
 //   --mtu BYTES     I-frame MTU bytes (default: 128)
 //   --txdelay MS    KISS TX delay ms (default: 300)
 //   --pid HEX       PID for UI frames in hex (default: F0)
+//   -s FILE         Run BASIC script after connect (connect mode only)
+//                   Pre-set vars: remote$, local$, callsign$
 //   -h              Show this help
 //
 // Tilde-escape commands (connect mode only, entered at the start of a line):
@@ -46,12 +48,15 @@
 // =============================================================================
 
 #include "ax25lib.hpp"
+#include "basic.hpp"
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -123,6 +128,7 @@ struct AppCfg {
     int         txdelay  = 300;           // KISS TX delay ms
     Config      ax25;                     // ax25lib Config (mycall, mtu, etc.)
     int         baud     = 9600;
+    std::string script;                   // path to BASIC script (-s); empty = interactive
 };
 
 static void print_usage(const char* prog) {
@@ -149,6 +155,7 @@ static void print_usage(const char* prog) {
         << "  --mtu N      I-frame MTU bytes (default: 128)\n"
         << "  --txdelay N  KISS TX delay ms (default: 300)\n"
         << "  --pid HEX    PID for UI frames (default: F0)\n"
+        << "  -s FILE      BASIC script to run after connect\n"
         << "  -h           Show this help\n\n"
         << "Tilde escapes (connect mode):\n"
         << "  ~.  disconnect and exit\n"
@@ -166,11 +173,12 @@ static bool parse_args(int argc, char* argv[], AppCfg& cfg) {
         {"mtu",     required_argument, nullptr, 1001},
         {"txdelay", required_argument, nullptr, 1002},
         {"pid",     required_argument, nullptr, 1003},
+        {"script",  required_argument, nullptr, 's'},
         {nullptr, 0, nullptr, 0}
     };
 
     int opt, idx = 0;
-    while ((opt = getopt_long(argc, argv, "c:r:m:d:b:p:Mw:t:k:n:h", longopts, &idx)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:r:m:d:b:p:Mw:t:k:n:s:h", longopts, &idx)) != -1) {
         switch (opt) {
         case 'c': cfg.ax25.mycall = Addr::make(optarg); break;
         case 'r': cfg.remote      = optarg; break;
@@ -192,6 +200,7 @@ static bool parse_args(int argc, char* argv[], AppCfg& cfg) {
         case 1001: cfg.ax25.mtu   = std::atoi(optarg); break;
         case 1002: cfg.txdelay    = std::atoi(optarg); break;
         case 1003: cfg.pid        = static_cast<uint8_t>(std::strtoul(optarg, nullptr, 16)); break;
+        case 's':  cfg.script     = optarg; break;
         case 'h':  print_usage(argv[0]); return false;
         default:   print_usage(argv[0]); return false;
         }
@@ -368,15 +377,15 @@ static int run_connect(Kiss& kiss, Router& router, const AppCfg& cfg) {
     bool        done      = false;
     bool        mon_on    = cfg.monitor;
     Addr        remote    = Addr::make(cfg.remote);
-    std::string recv_buf;        // data received from remote, not yet printed
+    std::string recv_buf;                    // partial-line buffer for interactive mode
+    std::deque<std::string> rx_lines;        // complete lines queued for BASIC on_recv
 
     // ── Monitor hook (optional) ──────────────────────────────────────────────
     if (mon_on) {
         router.on_monitor = [](const Frame& f){ print_frame(f, ">>"); };
     }
 
-    // ── Accept an inbound connection (if -r gives a wildcard "*") ────────────
-    // Normal case: initiate outgoing connection
+    // ── Shared connection-event callbacks ────────────────────────────────────
     auto attach_callbacks = [&](Connection* c) {
         c->on_connect = [&, c]{
             std::cout << "\n" << GREEN() << BOLD()
@@ -391,22 +400,24 @@ static int run_connect(Kiss& kiss, Router& router, const AppCfg& cfg) {
         };
         c->on_data = [&](const uint8_t* d, std::size_t n) {
             st.bytes_rx += n;
-            // Print received data; partial lines are buffered until CR or LF
+            ++st.frames_rx;
+            // Split incoming bytes on CR/LF and push complete lines
             recv_buf.append(reinterpret_cast<const char*>(d), n);
             std::size_t pos;
             while ((pos = recv_buf.find_first_of("\r\n")) != std::string::npos) {
-                std::string line = recv_buf.substr(0, pos);
+                std::string line_in = recv_buf.substr(0, pos);
                 recv_buf.erase(0, pos + 1);
-                // Swallow empty lines that result from CRLF pairs
-                if (!line.empty())
-                    std::cout << CYAN() << "< " << RESET() << line << "\n" << std::flush;
+                if (line_in.empty()) continue;  // swallow bare CR/LF of CRLF pairs
+                rx_lines.push_back(line_in);
+                // In interactive (non-script) mode also print to stdout
+                if (cfg.script.empty())
+                    std::cout << CYAN() << "< " << RESET() << line_in << "\n" << std::flush;
             }
-            ++st.frames_rx;
         };
     };
 
+    // ── Establish connection ─────────────────────────────────────────────────
     if (cfg.remote == "*" || cfg.remote == "ANY") {
-        // Passive: wait for incoming connection
         std::cout << YELLOW() << "Waiting for incoming connection on "
                   << cfg.ax25.mycall.str() << "..." << RESET() << "\n" << std::flush;
         router.listen([&](Connection* c) {
@@ -414,7 +425,6 @@ static int run_connect(Kiss& kiss, Router& router, const AppCfg& cfg) {
             attach_callbacks(c);
         });
     } else {
-        // Active: dial out
         std::cout << YELLOW() << "Connecting to "
                   << BOLD() << remote.str() << RESET()
                   << YELLOW() << " from " << cfg.ax25.mycall.str()
@@ -424,7 +434,83 @@ static int run_connect(Kiss& kiss, Router& router, const AppCfg& cfg) {
         ++st.frames_tx;   // SABM
     }
 
-    // ── Main I/O loop ────────────────────────────────────────────────────────
+    // ── Wait until connected (needed before BASIC can run) ───────────────────
+    if (!cfg.script.empty()) {
+        std::cout << DIM() << "[Waiting for connection before running script…]"
+                  << RESET() << "\n" << std::flush;
+        while (!g_quit && !done && conn &&
+               conn->state() != Connection::State::CONNECTED) {
+            struct timeval tv{ 0, 20000 };
+            fd_set fds; FD_ZERO(&fds); FD_SET(ser_fd, &fds);
+            select(ser_fd + 1, &fds, nullptr, nullptr, &tv);
+            router.poll();
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // ── BASIC script mode ────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════════════════
+    if (!cfg.script.empty() && !g_quit && !done) {
+        Basic interp;
+
+        // ── Wire output: PRINT / SEND → AX.25 send ──────────────────────────
+        interp.on_send = [&](const std::string& s) {
+            if (!conn) return;
+            if (conn->send(s)) {
+                st.bytes_tx += s.size();
+                ++st.frames_tx;
+                std::cout << GREEN() << "> " << RESET()
+                          << s.substr(0, s.size()>80?80:s.size()) << "\n" << std::flush;
+            }
+        };
+
+        // ── Wire input: INPUT / RECV ← poll serial + drain rx_lines ─────────
+        interp.on_recv = [&](int timeout_ms) -> std::string {
+            // Already have a queued line?
+            if (!rx_lines.empty()) {
+                std::string l = rx_lines.front(); rx_lines.pop_front();
+                return l;
+            }
+            // Poll until we get one or time out
+            auto deadline = std::chrono::steady_clock::now()
+                          + std::chrono::milliseconds(timeout_ms);
+            while (!g_quit && !done) {
+                struct timeval tv{ 0, 20000 };
+                fd_set fds; FD_ZERO(&fds); FD_SET(ser_fd, &fds);
+                select(ser_fd + 1, &fds, nullptr, nullptr, &tv);
+                router.poll();
+                if (!rx_lines.empty()) {
+                    std::string l = rx_lines.front(); rx_lines.pop_front();
+                    return l;
+                }
+                if (std::chrono::steady_clock::now() >= deadline) break;
+            }
+            return "";
+        };
+
+        // ── Wire log ─────────────────────────────────────────────────────────
+        interp.on_log = [](const std::string& msg) {
+            std::cerr << "[BASIC] " << msg << "\n";
+        };
+
+        // ── Pre-set session variables ─────────────────────────────────────────
+        interp.set_str("REMOTE$",   cfg.remote);
+        interp.set_str("LOCAL$",    cfg.ax25.mycall.str());
+        interp.set_str("CALLSIGN$", cfg.remote);   // alias expected by BBS scripts
+
+        // ── Load and run ─────────────────────────────────────────────────────
+        if (!interp.load_file(cfg.script)) {
+            std::cerr << "Error: cannot open script: " << cfg.script << "\n";
+        } else {
+            interp.run();
+        }
+
+        done = true;  // script finished → disconnect
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // ── Interactive mode ─────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════════════════
     while (!g_quit && !done) {
         // Poll serial port (20 ms) then tick timers
         {

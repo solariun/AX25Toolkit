@@ -70,8 +70,8 @@ bbs: bbs.cpp $(LIB_OBJ) $(BASIC_OBJ) ax25lib.hpp basic.hpp ini.hpp
 ax25kiss: ax25kiss.cpp
 	$(CXX) $(CXXFLAGS) -o $@ ax25kiss.cpp
 
-ax25client: ax25client.cpp $(LIB_OBJ) ax25lib.hpp
-	$(CXX) $(CXXFLAGS) -o $@ ax25client.cpp $(LIB_OBJ)
+ax25client: ax25client.cpp $(LIB_OBJ) $(BASIC_OBJ) ax25lib.hpp basic.hpp
+	$(CXX) $(CXXFLAGS) $(SQLITE_FLAGS) -o $@ ax25client.cpp $(LIB_OBJ) $(BASIC_OBJ) $(SQLITE_LIBS)
 
 test_ax25lib: test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) ax25lib.hpp basic.hpp ini.hpp
 	$(CXX) -std=c++17 $(GTEST_CFLAGS) $(SQLITE_FLAGS) \

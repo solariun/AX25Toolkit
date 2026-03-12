@@ -716,9 +716,9 @@ make test
 Expected output:
 
 ```
-[==========] Running 117 tests from 13 test suites.
+[==========] Running 127 tests from 13 test suites.
 ...
-[  PASSED  ] 117 tests.
+[  PASSED  ] 127 tests.
 ```
 
 ### Test suites
@@ -736,7 +736,7 @@ Expected output:
 | `IniConfig` | 4 | Load file, missing file, inline comments, bool/double getters |
 | `BasicInterp` | 17 | PRINT, arithmetic, string concat, IF/THEN/ELSE multi-stmt, FOR/NEXT, WHILE/WEND, GOSUB/RETURN, string functions, EXEC, EXEC timeout, SEND_APRS, SEND_UI, math |
 | `QBasic` | 23 | Labels+GOTO, CONST, block IF/ELSEIF/ELSE/END IF, DO/LOOP WHILE, DO WHILE, DO/LOOP UNTIL, EXIT DO, EXIT FOR, SELECT CASE (simple/ELSE/range/IS), SUB (CALL+implicit), FUNCTION (numeric+string), nested function calls, EXIT SUB, TYPE/DIM, no-line-numbers, GOSUB to label |
-| `QBasicExt` | 25 | FOR IN MATCH (basic/numbers/no-matches/EXIT FOR), REMATCH, REFIND$, REALL$ (default+custom sep), RESUB$, RESUBALL$, REGROUP$, RECOUNT, MAP (set/get/has/del/keys/size/clear), QUEUE (push/pop/peek/size/empty/clear/pop-empty/DO WHILE loop) |
+| `QBasicExt` | 35 | FOR IN MATCH (basic/numbers/no-matches/EXIT FOR), REMATCH, REFIND$, REALL$ (default+custom sep), RESUB$, RESUBALL$, REGROUP$, RECOUNT, MAP (set/get/has/del/keys/size/clear), QUEUE (push/pop/peek/size/empty/clear/pop-empty/DO WHILE loop), ARRAY (DIM/read/write/numeric/auto-declare/assoc-key/size/FOR IN order/empty/function-return) |
 | `TokenizeArgs` | 4 | Plain args, double-quoted args, single-quoted args, empty input |
 
 ---
@@ -1498,6 +1498,121 @@ END SUB
 > to distinguish an empty-queue case from a value that happens to be `""`.
 > Use `QUEUE_CLEAR` when finished to release memory.
 
+---
+
+### Arrays
+
+Arrays are indexed collections backed by the same `maps_` storage as MAP.
+They support both **numeric indices** (classic `arr(0)..arr(n)`) and
+**string keys** (associative / dictionary-style access).
+
+#### Declaring and using arrays
+
+```basic
+DIM words$(4)           ' string array, 5 slots (0..4) pre-initialised
+DIM scores(9)           ' numeric array, 10 slots (0..9)
+
+words$(0) = "alpha"
+words$(1) = "beta"
+PRINT words$(0)         ' → alpha
+PRINT STR$(ARRAY_SIZE("WORDS$"))   ' → 2  (slots 0 and 1 were written over defaults)
+```
+
+> **Note:** `DIM arr(n)` pre-creates slots `0..n` so `ARRAY_SIZE` reports `n+1`.
+> Array names are always upper-cased internally — pass the name in uppercase to
+> `ARRAY_SIZE`.
+
+#### Auto-declaration
+
+Arrays can be written without `DIM`:
+
+```basic
+result$(0) = "first"
+result$(1) = "second"
+```
+
+The array is registered automatically on the first write.
+
+#### Associative (string-keyed) arrays
+
+```basic
+DIM lookup$(0)          ' register name; slot "0" is just a placeholder
+lookup$("alice") = "admin"
+lookup$("bob")   = "user"
+PRINT lookup$("alice")  ' → admin
+```
+
+#### Iterating with FOR IN
+
+`FOR var IN arrname` iterates all stored values.
+Numeric indices are visited in **ascending numeric order**; string keys
+are visited in lexicographic order after numeric keys.
+
+```basic
+DIM fruit$(2)
+fruit$(0) = "apple"
+fruit$(1) = "banana"
+fruit$(2) = "cherry"
+
+FOR f$ IN FRUIT$
+    PRINT f$
+NEXT
+' Output: apple / banana / cherry
+```
+
+#### ARRAY_SIZE
+
+| Function | Returns |
+|---|---|
+| `ARRAY_SIZE(name$)` | Number of elements currently stored in the named array |
+
+Pass the array name in **uppercase** (the interpreter stores names in uppercase).
+
+#### Functions returning arrays ("connect user array return")
+
+A `FUNCTION` can populate an array named after itself, giving callers a
+multi-value return without needing a global variable:
+
+```basic
+' Split a space-delimited sentence; returns word count.
+' Caller reads words from Split$(0), Split$(1), ...
+FUNCTION Split$(sentence$)
+    DIM i AS INTEGER
+    DIM word$ AS STRING
+    DIM c AS INTEGER
+    i = 0
+    FOR c = 1 TO LEN(sentence$)
+        DIM ch$ AS STRING
+        ch$ = MID$(sentence$, c, 1)
+        IF ch$ = " " THEN
+            IF word$ <> "" THEN
+                Split$(i) = word$   ' write into the function's array
+                i = i + 1
+                word$ = ""
+            END IF
+        ELSE
+            word$ = word$ + ch$
+        END IF
+    NEXT c
+    IF word$ <> "" THEN
+        Split$(i) = word$
+        i = i + 1
+    END IF
+    Split$ = STR$(i)    ' scalar return = word count
+END FUNCTION
+
+DIM n AS INTEGER
+n = VAL(Split$("hello world foo"))   ' n = 3
+PRINT Split$(0)   ' hello
+PRINT Split$(1)   ' world
+PRINT Split$(2)   ' foo
+```
+
+Because `maps_` is global, the array is accessible after the function returns.
+Use `MAP_CLEAR "SPLIT$"` to free its memory when done.
+
+---
+
 #### String functions
 
 | Function | Returns | Example |
@@ -1923,6 +2038,7 @@ Options:
   --mtu BYTES   I-frame MTU bytes (default: 128)
   --txdelay MS  KISS TX delay ms (default: 300)
   --pid HEX     PID for UI frames (default: F0)
+  -s FILE       BASIC script to run after connecting (connect mode only)
   -h            Show help
 ```
 
@@ -1983,3 +2099,68 @@ Session summary:
 [14:32:06] >> N0CALL>W1BBS [I] Ns=0 Nr=0 PID=0xF0 | Hello!
 [14:32:06] >> W1BBS>N0CALL [RR] Nr=1
 ```
+
+### BASIC scripting mode (`-s`)
+
+Pass `-s script.bas` (or `--script script.bas`) to run a BASIC script
+automatically after the AX.25 connection is established.  The script
+replaces the interactive keyboard loop — perfect for automating BBS logins,
+beaconing sequences, remote probing, or any other session that follows a
+predictable exchange.
+
+```bash
+# Automate a BBS session with a script
+ax25client -c W1AW -r W1BBS-1 -s login.bas /dev/ttyUSB0
+```
+
+#### Pre-defined variables
+
+| Variable | Value |
+|---|---|
+| `remote$` | Remote station callsign (same as `-r` argument) |
+| `local$` | My callsign (same as `-c` argument) |
+| `callsign$` | Alias for `remote$` (matches BBS script convention) |
+
+#### I/O wiring
+
+| BASIC statement | Effect |
+|---|---|
+| `PRINT` / `SEND` | Transmits the string over the AX.25 I-frame channel |
+| `INPUT` / `RECV` | Blocks until a complete line arrives from the remote station (or times out) |
+
+#### Example script — BBS login
+
+```basic
+' login.bas — automated BBS login and message check
+CONST TIMEOUT = 30000   ' 30 second receive timeout
+
+' Wait for the BBS banner
+RECV banner$, TIMEOUT
+PRINT "Connected to: " + banner$
+
+' Send our callsign to the BBS
+SEND remote$ + "\r\n"
+
+RECV prompt$, TIMEOUT
+IF INSTR(prompt$, "Email") > 0 THEN
+    SEND "EMAIL\r\n"
+    RECV listing$, TIMEOUT
+    PRINT listing$
+END IF
+
+SEND "BYE\r\n"
+END
+```
+
+#### Best practices for scripts
+
+- Use `RECV var$, timeout_ms` with generous timeouts; packet radio has real
+  latency.  Start with `30000` (30 s) and tune down once the protocol is
+  confirmed.
+- Use `PRINT` (not `SEND`) for diagnostic output you want to see locally but
+  not transmitted.  Both are wired to `on_send` in script mode; if you need
+  local-only output consider logging to a file with `EXEC "echo … >> log.txt", r$`.
+- Check the return value of `RECV` — an empty string means timeout, not
+  necessarily a disconnect.
+- The script exits cleanly at `END` or when it falls off the bottom;
+  `ax25client` then disconnects automatically.

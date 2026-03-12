@@ -1591,6 +1591,178 @@ TEST(QBasicExt, QueueDoLoop) {
     EXPECT_NE(out.find("test"),    std::string::npos);
 }
 
+// =============================================================================
+// ARRAY — DIM arr(n), arr(i) = val, x = arr(i), FOR x IN arr, ARRAY_SIZE
+// =============================================================================
+
+TEST(QBasicExt, ArrayDimRead) {
+    // DIM arr(2) pre-initialises slots 0..2; read back returns default value
+    std::string out = run_basic(
+        "DIM nums(2)\n"
+        "PRINT STR$(ARRAY_SIZE(\"NUMS\"))\n"  // 3 slots (0, 1, 2)
+    );
+    EXPECT_NE(out.find("3"), std::string::npos);
+}
+
+TEST(QBasicExt, ArrayWriteRead) {
+    // arr(i) = value followed by x = arr(i)
+    std::string out = run_basic(
+        "DIM arr$(4)\n"
+        "arr$(0) = \"alpha\"\n"
+        "arr$(1) = \"beta\"\n"
+        "arr$(2) = \"gamma\"\n"
+        "PRINT arr$(0)\n"
+        "PRINT arr$(1)\n"
+        "PRINT arr$(2)\n"
+    );
+    EXPECT_NE(out.find("alpha"), std::string::npos);
+    EXPECT_NE(out.find("beta"),  std::string::npos);
+    EXPECT_NE(out.find("gamma"), std::string::npos);
+}
+
+TEST(QBasicExt, ArrayNumeric) {
+    // Numeric array with DIM and arithmetic on elements
+    std::string out = run_basic(
+        "DIM vals(3)\n"
+        "vals(0) = 10\n"
+        "vals(1) = 20\n"
+        "vals(2) = 30\n"
+        "PRINT STR$(vals(0) + vals(1) + vals(2))\n"
+    );
+    EXPECT_NE(out.find("60"), std::string::npos);
+}
+
+TEST(QBasicExt, ArrayAutoDeclaration) {
+    // Writing to arr(i) without DIM auto-registers it as an array
+    std::string out = run_basic(
+        "x$(0) = \"first\"\n"
+        "x$(1) = \"second\"\n"
+        "PRINT x$(0)\n"
+        "PRINT x$(1)\n"
+    );
+    EXPECT_NE(out.find("first"),  std::string::npos);
+    EXPECT_NE(out.find("second"), std::string::npos);
+}
+
+TEST(QBasicExt, ArrayAssocKey) {
+    // String-keyed (associative) array access
+    std::string out = run_basic(
+        "DIM lookup$(0)\n"    // just registers the name
+        "lookup$(\"alice\") = \"admin\"\n"
+        "lookup$(\"bob\")   = \"user\"\n"
+        "PRINT lookup$(\"alice\")\n"
+        "PRINT lookup$(\"bob\")\n"
+    );
+    EXPECT_NE(out.find("admin"), std::string::npos);
+    EXPECT_NE(out.find("user"),  std::string::npos);
+}
+
+TEST(QBasicExt, ArraySize) {
+    // ARRAY_SIZE reflects number of stored elements
+    std::string out = run_basic(
+        "DIM v(4)\n"
+        "v(0) = 1\n"
+        "v(1) = 2\n"
+        "PRINT STR$(ARRAY_SIZE(\"V\"))\n"  // DIM (4) pre-inits 5 slots
+    );
+    EXPECT_NE(out.find("5"), std::string::npos);
+}
+
+TEST(QBasicExt, ForInArray) {
+    // FOR x IN arr iterates all array values in index order
+    std::string out = run_basic(
+        "DIM words$(2)\n"
+        "words$(0) = \"cat\"\n"
+        "words$(1) = \"dog\"\n"
+        "words$(2) = \"bird\"\n"
+        "FOR w$ IN WORDS$\n"
+        "  PRINT w$\n"
+        "NEXT\n"
+    );
+    EXPECT_NE(out.find("cat"),  std::string::npos);
+    EXPECT_NE(out.find("dog"),  std::string::npos);
+    EXPECT_NE(out.find("bird"), std::string::npos);
+}
+
+TEST(QBasicExt, ForInArrayNumericOrder) {
+    // Numeric indices must iterate in ascending numeric (not lexicographic) order
+    std::string out = run_basic(
+        "DIM n(2)\n"
+        "n(0) = 100\n"
+        "n(1) = 200\n"
+        "n(2) = 300\n"
+        "DIM acc$ AS STRING\n"
+        "FOR v IN N\n"
+        "  acc$ = acc$ + STR$(v) + \"|\"\n"
+        "NEXT\n"
+        "PRINT acc$\n"
+    );
+    // Values must appear in order: 100, 200, 300
+    auto p100  = out.find("100");
+    auto p200  = out.find("200");
+    auto p300  = out.find("300");
+    EXPECT_NE(p100,  std::string::npos);
+    EXPECT_NE(p200,  std::string::npos);
+    EXPECT_NE(p300,  std::string::npos);
+    EXPECT_LT(p100, p200);
+    EXPECT_LT(p200, p300);
+}
+
+TEST(QBasicExt, ForInArrayEmpty) {
+    // FOR IN over an empty array should execute zero iterations
+    std::string out = run_basic(
+        "DIM empty$(0)\n"
+        // Remove the pre-inited slot so the array is truly empty
+        "MAP_DEL \"EMPTY$\", \"0\"\n"
+        "FOR v$ IN EMPTY$\n"
+        "  PRINT \"SHOULD_NOT_PRINT\"\n"
+        "NEXT\n"
+        "PRINT \"done\"\n"
+    );
+    EXPECT_EQ(out.find("SHOULD_NOT_PRINT"), std::string::npos);
+    EXPECT_NE(out.find("done"), std::string::npos);
+}
+
+TEST(QBasicExt, ArrayFunctionReturn) {
+    // A FUNCTION can populate an array named after itself for multi-value return
+    std::string out = run_basic(
+        "FUNCTION Split$(sentence$)\n"
+        "  DIM i AS INTEGER\n"
+        "  i = 0\n"
+        "  DIM word$ AS STRING\n"
+        "  DIM c AS INTEGER\n"
+        "  FOR c = 1 TO LEN(sentence$)\n"
+        "    DIM ch$ AS STRING\n"
+        "    ch$ = MID$(sentence$, c, 1)\n"
+        "    IF ch$ = \" \" THEN\n"
+        "      IF word$ <> \"\" THEN\n"
+        "        Split$(i) = word$\n"
+        "        i = i + 1\n"
+        "        word$ = \"\"\n"
+        "      END IF\n"
+        "    ELSE\n"
+        "      word$ = word$ + ch$\n"
+        "    END IF\n"
+        "  NEXT c\n"
+        "  IF word$ <> \"\" THEN\n"
+        "    Split$(i) = word$\n"
+        "    i = i + 1\n"
+        "  END IF\n"
+        "  Split$ = STR$(i)\n"
+        "END FUNCTION\n"
+        "DIM count AS INTEGER\n"
+        "count = VAL(Split$(\"hello world foo\"))\n"
+        "PRINT STR$(count)\n"
+        "PRINT Split$(0)\n"
+        "PRINT Split$(1)\n"
+        "PRINT Split$(2)\n"
+    );
+    EXPECT_NE(out.find("3"),     std::string::npos);
+    EXPECT_NE(out.find("hello"), std::string::npos);
+    EXPECT_NE(out.find("world"), std::string::npos);
+    EXPECT_NE(out.find("foo"),   std::string::npos);
+}
+
 // Main — GoogleTest entry point
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
