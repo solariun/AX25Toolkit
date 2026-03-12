@@ -5,7 +5,8 @@
 A self-contained C++11 library implementing the AX.25 amateur-radio link-layer
 protocol over KISS-mode TNCs.  Includes a full-featured BBS with INI config,
 a Tiny BASIC scripting engine (SQLite · TCP sockets · HTTP GET · shell exec),
-remote shell access, an interactive KISS terminal, and a 68-test GoogleTest suite.
+a complete TNC terminal client (`ax25client`), remote shell access, an
+interactive KISS terminal, and a 69-test GoogleTest suite.
 
 ---
 
@@ -25,6 +26,7 @@ remote shell access, an interactive KISS terminal, and a 68-test GoogleTest suit
 12. [INI Configuration](#12-ini-configuration)
 13. [BASIC Scripting](#13-basic-scripting)
 14. [APRS Helpers (ax25::aprs)](#14-aprs-helpers-ax25aprs)
+15. [ax25client — TNC Terminal Client](#15-ax25client--tnc-terminal-client)
 
 ---
 
@@ -134,15 +136,18 @@ different physical layer without touching the rest).
                               └─────────────────────────────────────────┘
 
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │  Node<T>  (template)                                                     │
-  │  ─────────────────                                                       │
-  │  + next : T*                                                             │
-  │  + prev : T*                                                             │
+  │  ObjNode<T>  (template)  — self-managing intrusive node                  │
+  │  ─────────────────────────────────────────────────────────────────────── │
+  │  # ObjNode(ObjList<T>&)   ← protected; auto-inserts on construction      │
+  │  # ~ObjNode()              ← protected; auto-removes on destruction       │
+  │  - next_ : T*                                                             │
+  │  - prev_ : T*                                                             │
+  │  - list_ : ObjList<T>*                                                    │
   └──────────────────────────────────────────────────────────────────────────┘
           ▲ inherits
           │
   ┌───────────────────────────────────────────────────────────────────────┐
-  │  Connection  extends Node<Connection>                                  │
+  │  Connection  extends ObjNode<Connection>                               │
   │  ─────────────────────────────────────────────────────────────────────│
   │  Callbacks: on_connect, on_disconnect, on_data                         │
   │  State: DISCONNECTED / CONNECTING / CONNECTED / DISCONNECTING          │
@@ -154,13 +159,15 @@ different physical layer without touching the rest).
   │  + disconnect()                                                         │
   │  + tick(now_ms)                                                         │
   └───────────────────────────────────────────────────────────────────────┘
-          │ lives in
+          │ lives in (inserted/removed automatically via ObjNode ctor/dtor)
           ▼
   ┌───────────────────────────────────────────────────────────────────────┐
-  │  List<Connection>  (intrusive doubly-linked list)                      │
+  │  ObjList<Connection>  (intrusive doubly-linked list)                   │
   │  ─────────────────────────────────────────────────────────────────────│
-  │  head_, tail_, size_                                                    │
-  │  + push_back(item)  remove(item)  snapshot()  begin()  end()           │
+  │  - head_, tail_, size_   (private)                                      │
+  │  - insert_back(item)     (called by ObjNode ctor — not public)          │
+  │  - erase(item)           (called by ObjNode dtor — not public)          │
+  │  + empty()  size()  begin()  end()  snapshot()                          │
   └───────────────────────────────────────────────────────────────────────┘
           │ owned by
           ▼
@@ -228,17 +235,20 @@ different physical layer without touching the rest).
 
 ```mermaid
 classDiagram
-    class Node~T~ {
-        +T* next
-        +T* prev
+    class ObjNode~T~ {
+        #ObjNode(ObjList~T~)
+        #~ObjNode()
+        -T* next_
+        -T* prev_
+        -ObjList~T~* list_
     }
 
-    class List~T~ {
+    class ObjList~T~ {
         -T* head_
         -T* tail_
         -size_t size_
-        +push_back(T*)
-        +remove(T*)
+        -insert_back(T*)
+        -erase(T*)
         +empty() bool
         +size() size_t
         +snapshot() vector~T*~
@@ -331,7 +341,7 @@ classDiagram
     class Router {
         -Kiss kiss_
         -Config cfg_
-        -List~Connection~ conns_
+        -ObjList~Connection~ conns_
         -function on_accept_
         +connect(remote) Connection*
         +listen(on_accept)
@@ -340,12 +350,12 @@ classDiagram
         +poll()
         +on_ui
         +on_monitor
-        +connections() List~Connection~
+        +connections() ObjList~Connection~
     }
 
-    Node~T~ <|-- Connection : inherits
-    List~T~ "1" *-- "0..*" Connection : contains
-    Router "1" *-- "1" List~Connection~ : owns
+    ObjNode~T~ <|-- Connection : inherits
+    ObjList~T~ "1" *-- "0..*" Connection : contains
+    Router "1" *-- "1" ObjList~Connection~ : owns
     Router "1" --> "1" Kiss : uses
     Kiss "1" *-- "1" Serial : owns
     Connection "1" --> "1" Router : back-ref
@@ -458,9 +468,9 @@ sudo dnf install gtest-devel sqlite-devel
 ### Build targets
 
 ```bash
-make          # build bbs and ax25kiss binaries
-make test     # compile and run all 68 unit tests
-make clean    # remove all build artefacts
+make            # build bbs, ax25kiss, and ax25client
+make test       # compile and run all 69 unit tests
+make clean      # remove all build artefacts
 ```
 
 To cross-compile or choose a different compiler:
@@ -706,16 +716,16 @@ make test
 Expected output:
 
 ```
-[==========] Running 68 tests from 11 test suites.
+[==========] Running 69 tests from 11 test suites.
 ...
-[  PASSED  ] 68 tests.
+[  PASSED  ] 69 tests.
 ```
 
 ### Test suites
 
 | Suite | Count | What is tested |
 |-------|-------|----------------|
-| `IntrusiveList` | 7 | Node/List push, remove (head/tail/middle), auto-insert pattern, snapshot |
+| `ObjList` | 8 | Auto-insert on construction, auto-remove on destruction (scope + `delete`), iteration, snapshot |
 | `Addr` | 8 | `make()`, encode/decode round-trips, SSID handling, equality |
 | `KissEncode` | 4 | FEND wrapping, command byte, FEND/FESC byte-stuffing |
 | `KissDecode` | 5 | Simple frame, byte-stuff round-trip, split byte-by-byte, multi-frame stream, empty frame skip |
@@ -828,38 +838,62 @@ user typing the command at the `Email>` (or BBS) prompt.
 
 ## Intrusive Container — Design Notes
 
-The `Node<T>` / `List<T>` pattern is borrowed from the Linux kernel and embedded
-systems.  Unlike `std::list` which heap-allocates a wrapper node for each
-element, the list linkage (`next`/`prev` pointers) lives **inside** the object
-itself by inheritance:
+`ObjNode<T>` / `ObjList<T>` is an intrusive doubly-linked container inspired by
+the Linux kernel's `list_head`.  Unlike `std::list`, which heap-allocates a
+wrapper node for each element, the linkage (`next_`/`prev_` pointers) lives
+**inside** the object itself — no extra allocation needed.
+
+### Self-managing lifetime
+
+The key improvement over a plain `Node<T>` base class is that **`ObjNode<T>`
+owns the insert/remove responsibility** so developers never call `push_back` or
+`remove` explicitly:
 
 ```cpp
-class Connection : public Node<Connection> { ... };
-```
+// T must inherit ObjNode<T>.
+// The constructor takes the list — insertion is automatic.
+struct MySession : ObjNode<MySession> {
+    std::string call;
+    MySession(ObjList<MySession>& list, std::string c)
+        : ObjNode<MySession>(list),   // ← inserts into list immediately
+          call(std::move(c)) {}
+    // destructor: ObjNode<MySession>::~ObjNode() fires automatically
+    //             → removes from list with O(1), no search
+};
 
-Advantages:
-* **Zero extra allocation** — no separate list-node object.
-* **O(1) remove** — an object can remove itself from the list without a search,
-  because it knows its own `prev` pointer.
-* **Auto-deregister on destroy** — `Connection::~Connection()` calls
-  `list_.remove(this)`, so the caller never has to manually unlink.
-
-```cpp
-// Connection constructor — auto-inserts into the supplied list
-Connection::Connection(Router* r, List<Connection>& lst, ...)
-    : router_(r), list_(lst), ...
+ObjList<MySession> sessions;
 {
-    lst.push_back(this);   // ← O(1), no allocation
-}
+    MySession a(sessions, "W1AW");
+    MySession b(sessions, "N0CALL");
+    assert(sessions.size() == 2);
+}   // a and b destroyed → auto-removed
+assert(sessions.empty());
 
-// Connection destructor — auto-removes
-Connection::~Connection() {
-    list_.remove(this);    // ← O(1), no search
-}
+// Heap allocation: delete triggers auto-remove too
+auto* s = new MySession(sessions, "PY2XXX");
+assert(sessions.size() == 1);
+delete s;          // ← safe: auto-removed from list before memory is freed
+assert(sessions.empty());
 ```
 
-The trade-off is that an object can only belong to **one** list at a time, which
-is fine here since a Connection belongs to exactly one Router.
+### API restrictions
+
+* **Default constructor is `= delete`** — every `ObjNode<T>` must bind to an
+  `ObjList<T>` at construction time.
+* **Copy and move are `= delete`** — nodes are identity-based, not value-based.
+* `ObjList<T>::insert_back` and `erase` are **private**, only callable by
+  `ObjNode<T>` (friend).  User code never calls them.
+* An object can belong to **one** list at a time (same trade-off as all
+  intrusive containers).
+
+### Advantages
+
+| Property | Benefit |
+|----------|---------|
+| Zero extra allocation | No wrapper `list_node` struct on the heap |
+| O(1) insert / remove | Pointer surgery only; no search |
+| Safety by construction | Can't forget to insert; can't double-free the link |
+| RAII-friendly | Scope exit or `delete` → automatic deregistration |
 
 ---
 
@@ -1270,3 +1304,131 @@ std::string readable = aprs::info_str(frame);
 | `&` | Gateway |
 
 Full table: [APRS Symbol Reference](http://www.aprs.org/symbols.html)
+
+---
+
+## 15. ax25client — TNC Terminal Client
+
+`ax25client` is a professional interactive TNC terminal that demonstrates the
+full `ax25lib` API.  It ships three operating modes selectable at runtime and
+requires no code changes to switch between connected ARQ sessions, passive
+monitoring, or connectionless UI frames.
+
+### Build
+
+```bash
+make ax25client
+# or as part of the full build:
+make
+```
+
+### Modes
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| `connect` | `-m connect` | AX.25 connected session with Go-Back-N ARQ (default when `-r` is given) |
+| `monitor` | `-m monitor` | Passive receive-only — decodes and prints every AX.25 frame, no TX |
+| `unproto` | `-m unproto` | Connectionless UI frames — type a line, it goes out over the air |
+
+### Quick start
+
+```bash
+# Monitor everything on the channel
+ax25client -c W1AW -m monitor /dev/ttyUSB0
+
+# Connect to a BBS
+ax25client -c W1AW -r W1BBS-1 /dev/ttyUSB0
+
+# Connect via digipeater path
+ax25client -c W1AW -r N0CALL -p WIDE1-1,WIDE2-1 /dev/ttyUSB0
+
+# Wait for ANY incoming connection (passive)
+ax25client -c W1AW -r ANY /dev/ttyUSB0
+
+# Send UI frames (unproto) with monitor on
+ax25client -c W1AW -m unproto -d CQ -M /dev/ttyUSB0
+
+# APRS monitoring (UI frames are printed regardless of destination)
+ax25client -c W1AW -m monitor -b 1200 /dev/ttyUSB0
+```
+
+### Full option reference
+
+```
+ax25client [OPTIONS] <serial_device>
+
+Options:
+  -c CALL       My callsign (required)
+  -r REMOTE     Remote station (connect mode; use ANY to accept inbound)
+  -m MODE       Operating mode: connect | monitor | unproto  (default: connect)
+  -d DEST       Destination for unproto UI frames (default: CQ)
+  -b BAUD       Baud rate (default: 9600)
+  -p PATH       Digipeater path, comma-separated (e.g. WIDE1-1,WIDE2-1)
+  -M            Enable frame monitor in connect/unproto mode
+  -w WIN        Window size 1-7 (default: 3)
+  -t T1_MS      T1 retransmit timer ms (default: 3000)
+  -k T3_MS      T3 keep-alive timer ms (default: 60000)
+  -n N2         Max retry count (default: 10)
+  --mtu BYTES   I-frame MTU bytes (default: 128)
+  --txdelay MS  KISS TX delay ms (default: 300)
+  --pid HEX     PID for UI frames (default: F0)
+  -h            Show help
+```
+
+### Tilde-escape commands (connect mode)
+
+Tilde escapes are processed only when `~` is the very first character of a line:
+
+| Escape | Action |
+|--------|--------|
+| `~.` | Disconnect and exit |
+| `~s` | Show connection status and traffic statistics |
+| `~m` | Toggle frame monitor on/off |
+| `~r` | Redraw current line (useful after unsolicited data scrolled the screen) |
+| `~?` | Show tilde-escape help |
+
+### Session transcript example
+
+```
+ax25client  W1AW  /dev/ttyUSB0 @9600 baud
+Connecting to W1BBS-1 from W1AW...
+
+*** Connected to W1BBS-1 ***
+
+< Welcome to ExampleBBS!
+< Commands: H=Help  BYE=Quit
+
+> H
+< H    This help
+< BYE  Disconnect
+
+~s
+
+=== Status ===
+  Local  : W1AW
+  Remote : W1BBS-1
+  Device : /dev/ttyUSB0  @9600 baud
+  State  : CONNECTED
+  Frames RX : 3  (87 data bytes)
+  Frames TX : 2  (3 data bytes)
+  Window    : 3  MTU=128  T1=3000ms  T3=60000ms
+
+> BYE
+< 73 de ExampleBBS
+
+*** Disconnected ***
+
+Session summary:
+  TX: 3 frames / 6 bytes
+  RX: 5 frames / 145 bytes
+```
+
+### Monitor mode output
+
+```
+[14:32:01] >> W1AW>APRS,WIDE1-1 [UI] PID=0xF0 | !4130.00N/07000.00W>Test beacon
+[14:32:05] >> N0CALL>W1BBS [SABM]
+[14:32:05] >> W1BBS>N0CALL [UA]
+[14:32:06] >> N0CALL>W1BBS [I] Ns=0 Nr=0 PID=0xF0 | Hello!
+[14:32:06] >> W1BBS>N0CALL [RR] Nr=1
+```

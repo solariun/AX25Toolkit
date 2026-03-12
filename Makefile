@@ -56,7 +56,7 @@ BASIC_OBJ = basic.o
 # ── Targets ───────────────────────────────────────────────────────────────────
 .PHONY: all clean test install-deps
 
-all: bbs ax25kiss
+all: bbs ax25kiss ax25client
 
 $(LIB_OBJ): $(LIB_SRC) ax25lib.hpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
@@ -70,6 +70,9 @@ bbs: bbs.cpp $(LIB_OBJ) $(BASIC_OBJ) ax25lib.hpp basic.hpp ini.hpp
 ax25kiss: ax25kiss.cpp
 	$(CXX) $(CXXFLAGS) -o $@ ax25kiss.cpp
 
+ax25client: ax25client.cpp $(LIB_OBJ) ax25lib.hpp
+	$(CXX) $(CXXFLAGS) -o $@ ax25client.cpp $(LIB_OBJ)
+
 test_ax25lib: test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) ax25lib.hpp basic.hpp ini.hpp
 	$(CXX) -std=c++17 $(GTEST_CFLAGS) $(SQLITE_FLAGS) \
 	    -o $@ test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) \
@@ -79,7 +82,7 @@ test: test_ax25lib
 	./test_ax25lib --gtest_color=yes
 
 clean:
-	rm -f $(LIB_OBJ) $(BASIC_OBJ) bbs ax25kiss test_ax25lib
+	rm -f $(LIB_OBJ) $(BASIC_OBJ) bbs ax25kiss ax25client test_ax25lib
 
 install-deps:
 	@echo "Install dependencies:"

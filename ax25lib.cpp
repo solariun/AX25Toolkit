@@ -332,21 +332,21 @@ void Kiss::poll() {
 // =============================================================================
 // Connection — ctor / dtor
 // =============================================================================
-Connection::Connection(Router* router, List<Connection>& lst,
+Connection::Connection(Router* router, ObjList<Connection>& lst,
                        const Addr& local, const Addr& remote,
                        const Config& cfg, bool outgoing)
-    : router_(router), list_(lst),
+    : ObjNode<Connection>(lst),         // ← auto-insert via ObjNode ctor
+      router_(router),
       local_(local), remote_(remote),
       cfg_(cfg), outgoing_(outgoing)
 {
-    (void)outgoing_;         // stored for potential future use; suppress unused warning
-    list_.push_back(this);   // ← auto-insert into intrusive container
+    (void)outgoing_;   // suppress unused-parameter warning
 }
 
 Connection::~Connection() {
     if (state_ == State::CONNECTED || state_ == State::CONNECTING)
         tx_disc();           // best-effort goodbye
-    list_.remove(this);      // ← auto-remove from intrusive container
+    // ObjNode<Connection> destructor fires next → auto-removes from list
 }
 
 // =============================================================================
@@ -627,7 +627,7 @@ Router::Router(Kiss& kiss, Config cfg)
 }
 
 Connection* Router::connect(const Addr& remote) {
-    auto* c = new Connection(this, conns_, cfg_.mycall, remote, cfg_, true);
+    auto* c = new Connection(this, conns_, cfg_.mycall, remote, cfg_, /*outgoing=*/true);
     c->start_connect(now_ms());
     return c;
 }
@@ -702,7 +702,7 @@ void Router::route(std::vector<uint8_t> raw, Millis now) {
         if (on_accept_) {
             // Create Connection in DISCONNECTED state; give caller a chance to
             // attach callbacks (on_connect, on_data, etc.) BEFORE we send UA.
-            auto* c = new Connection(this, conns_, cfg_.mycall, f.src, cfg_, false);
+            auto* c = new Connection(this, conns_, cfg_.mycall, f.src, cfg_, /*outgoing=*/false);
             on_accept_(c);             // caller sets callbacks here
             c->handle_frame(f, now);   // → sends UA, fires on_connect
         } else {

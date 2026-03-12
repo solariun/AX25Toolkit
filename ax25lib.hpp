@@ -5,10 +5,14 @@
 //   Serial → Kiss → Router → Connection
 //
 // Intrusive containers:
-//   Node<T>    — base; adds next/prev to T
-//   List<T>    — doubly-linked list over Node<T>
-//   Connection extends Node<Connection> and auto-inserts/removes itself from
-//   the List<Connection> that is passed to its constructor.
+//   ObjNode<T>  — base; stores next/prev pointers + list reference.
+//                 Default constructor is DELETED.
+//                 The sole protected constructor takes an ObjList<T>& and
+//                 automatically inserts the derived object into that list.
+//                 The protected destructor automatically removes it.
+//                 Developers never call push_back / remove manually.
+//   ObjList<T>  — doubly-linked list over ObjNode<T>-derived objects.
+//                 Insertion/removal is driven entirely by ObjNode ctor/dtor.
 //
 // Compile:
 //   g++ -std=c++11 -O2 -pthread -o prog ax25lib.cpp prog.cpp
@@ -41,46 +45,69 @@ inline Millis now_ms() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Intrusive doubly-linked list
+// Forward declarations
+// ─────────────────────────────────────────────────────────────────────────────
+template<typename T> class ObjList;
+template<typename T> class ObjNode;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ObjNode<T> — intrusive doubly-linked node with automatic list management.
 //
-// T must publicly inherit Node<T>.
-// Pushing an already-inserted node is undefined behaviour.
+// Usage:
+//   struct MyObj : ObjNode<MyObj> {
+//       MyObj(ObjList<MyObj>& list, int val)
+//           : ObjNode<MyObj>(list), val_(val) {}
+//       int val_;
+//   };
+//
+//   ObjList<MyObj> list;
+//   { MyObj a(list, 1), b(list, 2); }  // auto-insert on ctor, auto-remove on dtor
+//
+// Rules:
+//   • T must inherit from ObjNode<T>.
+//   • Default constructor is deleted; you must pass an ObjList<T>&.
+//   • Copy and move are deleted (nodes are owned by the list).
+//   • Destruction automatically removes the node from its list.
 // ─────────────────────────────────────────────────────────────────────────────
 template<typename T>
-struct Node {
-    T* next = nullptr;
-    T* prev = nullptr;
+class ObjNode {
+    friend class ObjList<T>;
+public:
+    ObjNode(const ObjNode&)            = delete;
+    ObjNode& operator=(const ObjNode&) = delete;
+
+protected:
+    ObjNode() = delete; // must bind to an ObjList
+
+    /// Sole constructor: registers this node in \p list immediately.
+    explicit ObjNode(ObjList<T>& list) : list_(&list), next_(nullptr), prev_(nullptr) {
+        list_->insert_back(static_cast<T*>(this));
+    }
+
+    /// Destructor: unregisters this node from its list automatically.
+    ~ObjNode() {
+        list_->erase(static_cast<T*>(this));
+    }
+
+private:
+    ObjList<T>* list_;   // non-owning; always valid
+    T*          next_;
+    T*          prev_;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ObjList<T> — intrusive doubly-linked list.
+//
+// Items join the list through their ObjNode<T> constructor and leave through
+// their ObjNode<T> destructor.  No explicit push/remove calls are needed.
+// ─────────────────────────────────────────────────────────────────────────────
 template<typename T>
-class List {
-    T*          head_ = nullptr;
-    T*          tail_ = nullptr;
-    std::size_t size_ = 0;
+class ObjList {
+    friend class ObjNode<T>;
 public:
-    List() = default;
-    List(const List&)            = delete;
-    List& operator=(const List&) = delete;
-
-    void push_back(T* item) {
-        auto* n  = static_cast<Node<T>*>(item);
-        n->prev  = tail_;
-        n->next  = nullptr;
-        if (tail_) static_cast<Node<T>*>(tail_)->next = item;
-        else       head_ = item;
-        tail_ = item;
-        ++size_;
-    }
-
-    void remove(T* item) {
-        auto* n = static_cast<Node<T>*>(item);
-        if (n->prev) static_cast<Node<T>*>(n->prev)->next = n->next;
-        else         head_ = n->next;
-        if (n->next) static_cast<Node<T>*>(n->next)->prev = n->prev;
-        else         tail_ = n->prev;
-        n->next = n->prev = nullptr;
-        if (size_) --size_;
-    }
+    ObjList() = default;
+    ObjList(const ObjList&)            = delete;
+    ObjList& operator=(const ObjList&) = delete;
 
     bool        empty() const { return size_ == 0; }
     std::size_t size()  const { return size_; }
@@ -90,18 +117,45 @@ public:
         T* operator->() { return cur; }
         T& operator*()  { return *cur; }
         iterator& operator++() {
-            cur = static_cast<Node<T>*>(cur)->next; return *this;
+            cur = static_cast<ObjNode<T>*>(cur)->next_; return *this;
         }
         bool operator!=(const iterator& o) const { return cur != o.cur; }
     };
     iterator begin() { return {head_}; }
     iterator end()   { return {nullptr}; }
 
-    // Snapshot: safe to iterate even if callbacks modify the list
+    /// Snapshot: safe to iterate even if callbacks modify the list mid-loop.
     std::vector<T*> snapshot() {
         std::vector<T*> v; v.reserve(size_);
         for (auto& x : *this) v.push_back(&x);
         return v;
+    }
+
+private:
+    T*          head_ = nullptr;
+    T*          tail_ = nullptr;
+    std::size_t size_ = 0;
+
+    /// Called by ObjNode constructor.
+    void insert_back(T* item) {
+        auto* n  = static_cast<ObjNode<T>*>(item);
+        n->prev_ = tail_;
+        n->next_ = nullptr;
+        if (tail_) static_cast<ObjNode<T>*>(tail_)->next_ = item;
+        else       head_ = item;
+        tail_ = item;
+        ++size_;
+    }
+
+    /// Called by ObjNode destructor.
+    void erase(T* item) {
+        auto* n = static_cast<ObjNode<T>*>(item);
+        if (n->prev_) static_cast<ObjNode<T>*>(n->prev_)->next_ = n->next_;
+        else          head_ = n->next_;
+        if (n->next_) static_cast<ObjNode<T>*>(n->next_)->prev_ = n->prev_;
+        else          tail_ = n->prev_;
+        n->next_ = n->prev_ = nullptr;
+        if (size_) --size_;
     }
 };
 
@@ -257,14 +311,13 @@ private:
 // ─────────────────────────────────────────────────────────────────────────────
 // Connection — AX.25 connected-mode session (intrusive list node)
 //
-// Extends Node<Connection> so it lives in a List<Connection>.
-// Constructor: auto-inserts into the supplied container.
-// Destructor:  auto-removes from the container.
-// Created only by Router.
+// Extends ObjNode<Connection>: the list is passed to the constructor, and
+// the node auto-inserts on construction / auto-removes on destruction.
+// Created only by Router; deleted by the application (delete conn).
 // ─────────────────────────────────────────────────────────────────────────────
 class Router;
 
-class Connection : public Node<Connection> {
+class Connection : public ObjNode<Connection> {
     friend class Router;
 public:
     enum class State { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING };
@@ -292,7 +345,7 @@ public:
     ~Connection();
 
 private:
-    Connection(Router* router, List<Connection>& lst,
+    Connection(Router* router, ObjList<Connection>& lst,
                const Addr& local, const Addr& remote,
                const Config& cfg, bool outgoing);
 
@@ -320,12 +373,11 @@ private:
     void stop_t3()            { t3_run_=false; }
     void reset_t3(Millis now) { t3_exp_=now+cfg_.t3_ms; t3_run_=true; }
 
-    Router*           router_;
-    List<Connection>& list_;
-    Addr              local_, remote_;
-    Config            cfg_;
-    State             state_    = State::DISCONNECTED;
-    bool outgoing_;  // true = we initiated; false = peer initiated
+    Router* router_;
+    Addr    local_, remote_;
+    Config  cfg_;
+    State   state_    = State::DISCONNECTED;
+    bool    outgoing_;
 
     // AX.25 state variables (mod 8)
     int vs_=0, vr_=0, va_=0, retry_=0;
@@ -382,14 +434,14 @@ public:
     // Main-loop integration: read serial + tick all connection timers
     void poll();
 
-    List<Connection>&  connections()       { return conns_; }
-    const Config&      config()      const { return cfg_; }
-    Config&            config()            { return cfg_; }
+    ObjList<Connection>&  connections()       { return conns_; }
+    const Config&         config()      const { return cfg_; }
+    Config&               config()            { return cfg_; }
 
 private:
-    Kiss&            kiss_;
-    Config           cfg_;
-    List<Connection> conns_;
+    Kiss&               kiss_;
+    Config              cfg_;
+    ObjList<Connection> conns_;
     std::function<void(Connection*)> on_accept_;
 
     void route(std::vector<uint8_t> raw, Millis now);

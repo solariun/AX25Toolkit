@@ -83,47 +83,60 @@ static Config make_cfg(const std::string& call) {
 }
 
 // =============================================================================
-// 1. Intrusive List — Node<T> / List<T>
+// 1. Intrusive List — ObjNode<T> / ObjList<T>
+//
+// ObjNode<T> is the new self-managing design:
+//   • default constructor DELETED — must bind to an ObjList<T>
+//   • ObjNode(ObjList<T>&) constructor auto-inserts into the list
+//   • ~ObjNode() auto-removes from the list
+//   • developers never call push_back / remove manually
 // =============================================================================
-struct Item : Node<Item> {
+
+/// Test fixture object.  Takes the list in its constructor (mandatory).
+struct Item : ObjNode<Item> {
     int val;
-    explicit Item(int v) : val(v) {}
+    Item(ObjList<Item>& l, int v) : ObjNode<Item>(l), val(v) {}
 };
 
-TEST(IntrusiveList, PushBackAndSize) {
-    List<Item> lst;
+TEST(ObjList, AutoInsertOnConstruction) {
+    ObjList<Item> lst;
     EXPECT_TRUE(lst.empty());
     EXPECT_EQ(lst.size(), 0u);
 
-    Item a(1), b(2), c(3);
-    lst.push_back(&a);
-    lst.push_back(&b);
-    lst.push_back(&c);
-
+    Item a(lst, 1), b(lst, 2), c(lst, 3);
     EXPECT_EQ(lst.size(), 3u);
     EXPECT_FALSE(lst.empty());
 }
 
-TEST(IntrusiveList, IterationOrder) {
-    List<Item> lst;
-    Item a(10), b(20), c(30);
-    lst.push_back(&a);
-    lst.push_back(&b);
-    lst.push_back(&c);
+TEST(ObjList, AutoRemoveOnDestruction) {
+    ObjList<Item> lst;
+    Item a(lst, 10);
+    {
+        Item b(lst, 20);
+        Item c(lst, 30);
+        EXPECT_EQ(lst.size(), 3u);
+    }   // b and c destroyed → auto-removed (reverse order: c then b)
+    EXPECT_EQ(lst.size(), 1u);
+    EXPECT_EQ(lst.begin()->val, 10);
+}
+
+TEST(ObjList, IterationOrder) {
+    ObjList<Item> lst;
+    Item a(lst, 10), b(lst, 20), c(lst, 30);
 
     std::vector<int> vals;
     for (auto& x : lst) vals.push_back(x.val);
     EXPECT_EQ(vals, (std::vector<int>{10, 20, 30}));
 }
 
-TEST(IntrusiveList, RemoveMiddle) {
-    List<Item> lst;
-    Item a(1), b(2), c(3);
-    lst.push_back(&a);
-    lst.push_back(&b);
-    lst.push_back(&c);
+TEST(ObjList, RemoveMiddleViaDelete) {
+    ObjList<Item> lst;
+    Item a(lst, 1);
+    auto* b = new Item(lst, 2);
+    Item c(lst, 3);
 
-    lst.remove(&b);
+    EXPECT_EQ(lst.size(), 3u);
+    delete b;                   // ← destructor auto-removes from list
     EXPECT_EQ(lst.size(), 2u);
 
     std::vector<int> vals;
@@ -131,56 +144,49 @@ TEST(IntrusiveList, RemoveMiddle) {
     EXPECT_EQ(vals, (std::vector<int>{1, 3}));
 }
 
-TEST(IntrusiveList, RemoveHead) {
-    List<Item> lst;
-    Item a(1), b(2);
-    lst.push_back(&a);
-    lst.push_back(&b);
-    lst.remove(&a);
+TEST(ObjList, RemoveHeadViaDelete) {
+    ObjList<Item> lst;
+    auto* a = new Item(lst, 1);
+    Item b(lst, 2);
+
+    delete a;
 
     std::vector<int> vals;
     for (auto& x : lst) vals.push_back(x.val);
     EXPECT_EQ(vals, (std::vector<int>{2}));
 }
 
-TEST(IntrusiveList, RemoveTail) {
-    List<Item> lst;
-    Item a(1), b(2);
-    lst.push_back(&a);
-    lst.push_back(&b);
-    lst.remove(&b);
+TEST(ObjList, RemoveTailViaDelete) {
+    ObjList<Item> lst;
+    Item a(lst, 1);
+    auto* b = new Item(lst, 2);
+
+    delete b;
 
     std::vector<int> vals;
     for (auto& x : lst) vals.push_back(x.val);
     EXPECT_EQ(vals, (std::vector<int>{1}));
 }
 
-TEST(IntrusiveList, AutoInsertRemovePattern) {
-    // Mimics Connection: object auto-inserts on ctor, auto-removes on dtor
-    struct AutoItem : Node<AutoItem> {
-        List<AutoItem>& list_;
-        explicit AutoItem(List<AutoItem>& l) : list_(l) { l.push_back(this); }
-        ~AutoItem() { list_.remove(this); }
-    };
-
-    List<AutoItem> lst;
+TEST(ObjList, ScopedLifetimeManagement) {
+    // This IS the idiomatic ObjNode pattern: scope controls list membership.
+    ObjList<Item> lst;
     {
-        AutoItem x(lst), y(lst), z(lst);
+        Item x(lst, 1), y(lst, 2), z(lst, 3);
         EXPECT_EQ(lst.size(), 3u);
         {
-            AutoItem w(lst);
+            Item w(lst, 4);
             EXPECT_EQ(lst.size(), 4u);
-        }                           // w destroyed → auto-remove
+        }                           // w destroyed → auto-removed
         EXPECT_EQ(lst.size(), 3u);
     }                               // x, y, z destroyed
     EXPECT_EQ(lst.size(), 0u);
     EXPECT_TRUE(lst.empty());
 }
 
-TEST(IntrusiveList, Snapshot) {
-    List<Item> lst;
-    Item a(1), b(2), c(3);
-    lst.push_back(&a); lst.push_back(&b); lst.push_back(&c);
+TEST(ObjList, Snapshot) {
+    ObjList<Item> lst;
+    Item a(lst, 1), b(lst, 2), c(lst, 3);
 
     auto snap = lst.snapshot();
     ASSERT_EQ(snap.size(), 3u);
