@@ -247,6 +247,151 @@ static bool open_pty(int& master, int& slave, std::string& path) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// UUID name lookup
+//
+// Bluetooth SIG assigns 16-bit numbers; in 128-bit UUIDs they appear as
+// the first 4 bytes:  0000XXXX-????-????-????-????????????
+// We extract XXXX regardless of the base UUID suffix, which is why vendor
+// UUIDs like 0000XXXX-ba2a-... still resolve to the standard SIG names.
+// ─────────────────────────────────────────────────────────────────────────────
+static std::string uuid_name(const std::string& uuid) {
+    // Well-known full 128-bit UUIDs (vendor / profile-specific)
+    static const std::pair<const char*, const char*> full128[] = {
+        // Nordic UART Service
+        {"6e400001-b5a3-f393-e0a9-e50e24dcca9e", "Nordic UART Service"},
+        {"6e400002-b5a3-f393-e0a9-e50e24dcca9e", "Nordic UART RX (write)"},
+        {"6e400003-b5a3-f393-e0a9-e50e24dcca9e", "Nordic UART TX (notify)"},
+    };
+    std::string lo = lower(uuid);
+    for (auto& [k, v] : full128)
+        if (lo == k) return v;
+
+    // Extract 16-bit SIG number from 0000XXXX-*
+    // UUID format: 8-4-4-4-12  →  positions 4-7 are the 16-bit number
+    if (lo.size() >= 8) {
+        unsigned val = 0;
+        try { val = (unsigned)std::stoul(lo.substr(0, 8), nullptr, 16); }
+        catch (...) { return "Unknown"; }
+        // Only consider the lower 16 bits (upper 16 should be 0000 for SIG UUIDs)
+        uint16_t sig = (uint16_t)(val & 0xFFFF);
+
+        // Bluetooth SIG 16-bit UUIDs — protocols
+        static const std::pair<uint16_t, const char*> sig_uuids[] = {
+            // Protocols
+            {0x0001, "SDP"},
+            {0x0003, "RFCOMM"},
+            {0x0005, "TCS-BIN"},
+            {0x0007, "ATT"},
+            {0x0008, "OBEX"},
+            {0x000F, "BNEP"},
+            {0x0010, "UPNP"},
+            {0x0011, "HIDP"},
+            {0x0017, "AVCTP"},
+            {0x0019, "AVDTP"},
+            {0x001E, "MCAP Control Channel"},
+            {0x001F, "MCAP Data Channel"},
+            {0x0100, "L2CAP"},
+            // Service classes (Classic BT)
+            {0x1101, "Serial Port"},
+            {0x1102, "LAN Access Using PPP"},
+            {0x1103, "Dialup Networking"},
+            {0x1104, "IrMC Sync"},
+            {0x1105, "OBEX Object Push"},
+            {0x1106, "OBEX File Transfer"},
+            {0x1107, "IrMC Sync Command"},
+            {0x1108, "Headset"},
+            {0x1109, "Cordless Telephony"},
+            {0x110A, "Audio Source"},
+            {0x110B, "Audio Sink"},
+            {0x110C, "A/V Remote Control Target"},
+            {0x110D, "Advanced Audio Distribution"},
+            {0x110E, "A/V Remote Control"},
+            {0x110F, "A/V Remote Control Controller"},
+            {0x1110, "Intercom"},
+            {0x1111, "Fax"},
+            {0x1112, "Headset Audio Gateway"},
+            {0x1115, "PANU"},
+            {0x1116, "NAP"},
+            {0x1117, "GN"},
+            {0x111E, "Handsfree"},
+            {0x111F, "Handsfree Audio Gateway"},
+            {0x1124, "HID"},
+            {0x112D, "SIM Access"},
+            {0x1131, "Headset HS"},
+            {0x1132, "Message Access Server"},
+            {0x1200, "PnP Information"},
+            {0x1201, "Generic Networking"},
+            {0x1202, "Generic File Transfer"},
+            {0x1203, "Generic Audio"},
+            {0x1204, "Generic Telephony"},
+            // BLE GATT Services
+            {0x1800, "Generic Access"},
+            {0x1801, "Generic Attribute"},
+            {0x1802, "Immediate Alert"},
+            {0x1803, "Link Loss"},
+            {0x1804, "Tx Power"},
+            {0x1805, "Current Time Service"},
+            {0x1807, "Next DST Change Service"},
+            {0x1808, "Glucose"},
+            {0x1809, "Health Thermometer"},
+            {0x180A, "Device Information"},
+            {0x180D, "Heart Rate"},
+            {0x180F, "Battery Service"},
+            {0x1810, "Blood Pressure"},
+            {0x1812, "Human Interface Device"},
+            {0x1816, "Cycling Speed and Cadence"},
+            {0x1818, "Cycling Power"},
+            {0x1819, "Location and Navigation"},
+            {0x181A, "Environmental Sensing"},
+            {0x181C, "User Data"},
+            {0x181D, "Weight Scale"},
+            {0x1826, "Fitness Machine"},
+            {0x1827, "Mesh Provisioning Service"},
+            {0x1828, "Mesh Proxy Service"},
+            // BLE GATT Characteristics
+            {0x2A00, "Device Name"},
+            {0x2A01, "Appearance"},
+            {0x2A04, "Peripheral Preferred Connection Params"},
+            {0x2A05, "Service Changed"},
+            {0x2A06, "Alert Level"},
+            {0x2A07, "Tx Power Level"},
+            {0x2A19, "Battery Level"},
+            {0x2A1C, "Temperature Measurement"},
+            {0x2A1D, "Temperature Type"},
+            {0x2A23, "System ID"},
+            {0x2A24, "Model Number String"},
+            {0x2A25, "Serial Number String"},
+            {0x2A26, "Firmware Revision String"},
+            {0x2A27, "Hardware Revision String"},
+            {0x2A28, "Software Revision String"},
+            {0x2A29, "Manufacturer Name String"},
+            {0x2A2A, "IEEE 11073-20601 Regulatory Cert"},
+            {0x2A37, "Heart Rate Measurement"},
+            {0x2A38, "Body Sensor Location"},
+            {0x2A3F, "Alert Status"},
+            {0x2A46, "New Alert"},
+            {0x2A4D, "Report"},
+            {0x2A50, "PnP ID"},
+            {0x2A6D, "Pressure"},
+            {0x2A6E, "Temperature"},
+            {0x2A6F, "Humidity"},
+            // GATT Descriptors
+            {0x2900, "Characteristic Extended Properties"},
+            {0x2901, "Characteristic User Description"},
+            {0x2902, "Client Characteristic Configuration"},
+            {0x2903, "Server Characteristic Configuration"},
+            {0x2904, "Characteristic Presentation Format"},
+            {0x2905, "Characteristic Aggregate Format"},
+            {0x2906, "Valid Range"},
+            {0x2908, "Report Reference"},
+        };
+        for (auto& [k, v] : sig_uuids)
+            if (sig == k) return v;
+    }
+    return "Unknown";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // BLE adapter helpers
 // ─────────────────────────────────────────────────────────────────────────────
 static std::optional<SimpleBLE::Adapter> get_adapter() {
@@ -409,7 +554,9 @@ static void do_scan(double timeout_s) {
         auto svcs = p.services();
         if (!svcs.empty()) {
             std::cout << "  Services advertised:\n";
-            for (auto& s : svcs) std::cout << "    " << s.uuid() << "\n";
+            for (auto& s : svcs)
+                std::cout << "    " << s.uuid()
+                          << "  (" << uuid_name(s.uuid()) << ")\n";
         }
         std::cout << "\n";
     }
@@ -435,45 +582,78 @@ static void do_inspect(const std::string& address) {
     try { p.connect(); }
     catch (const std::exception& e) { std::cerr << "Connect failed: " << e.what() << "\n"; return; }
 
-    std::cout << "Connected.  MTU=" << p.mtu() << "\n\n";
+    std::string dev_name = p.identifier().empty() ? address : p.identifier();
+    std::cout << "Connected: " << dev_name << "  MTU=" << p.mtu() << "\n\n";
+
+    // Candidates for the bridge command suggestion
+    std::string best_svc, best_write, best_read;
 
     for (auto& svc : p.services()) {
-        std::cout << hr('=') << "\n";
-        std::cout << "Service : " << svc.uuid() << "\n";
+        std::string sname = uuid_name(svc.uuid());
+        std::cout << "SERVICE " << svc.uuid() << ": " << sname << "\n";
+
         for (auto& chr : svc.characteristics()) {
-            std::cout << "\n  Characteristic: " << chr.uuid() << "\n";
-            std::cout << "  Capabilities  : ";
-            bool first = true;
-            auto cap = [&](bool ok, const char* name) {
-                if (!ok) return;
-                if (!first) std::cout << " | ";
-                std::cout << name;
-                first = false;
-            };
-            cap(chr.can_read(),            "read");
-            cap(chr.can_write_request(),   "write");
-            cap(chr.can_write_command(),   "write-without-response");
-            cap(chr.can_notify(),          "notify");
-            cap(chr.can_indicate(),        "indicate");
-            std::cout << "\n";
+            // Build capability list
+            std::vector<std::string> caps;
+            if (chr.can_read())            caps.push_back("read");
+            if (chr.can_notify())          caps.push_back("notify");
+            if (chr.can_indicate())        caps.push_back("indicate");
+            if (chr.can_write_request())   caps.push_back("write");
+            if (chr.can_write_command())   caps.push_back("write-without-response");
+
+            std::string caps_str;
+            for (size_t i = 0; i < caps.size(); ++i) {
+                if (i) caps_str += ", ";
+                caps_str += caps[i];
+            }
+
+            std::string cname = uuid_name(chr.uuid());
+            std::cout << "     CHARACTERISTIC " << chr.uuid()
+                      << ": " << cname
+                      << "  [" << caps_str << "]\n";
+
+            // Read current value for readable characteristics
             if (chr.can_read()) {
                 try {
                     auto val = p.read(svc.uuid(), chr.uuid());
-                    std::cout << "  Value         : "
-                              << hexdump(val.data(), val.size()) << "\n";
-                } catch (...) {
-                    std::cout << "  Value         : (read error)\n";
-                }
+                    // Try to show as printable string, fall back to hex
+                    bool printable = !val.empty();
+                    for (auto b : val)
+                        if (b < 0x20 || b > 0x7E) { printable = false; break; }
+                    if (printable) {
+                        std::cout << "         Value: \""
+                                  << std::string(val.begin(), val.end()) << "\"\n";
+                    } else if (!val.empty()) {
+                        std::cout << "         Value: " << hexdump(val.data(), val.size()) << "\n";
+                    }
+                } catch (...) {}
             }
+
+            // Descriptors
+            for (auto& desc : chr.descriptors()) {
+                std::string dname = uuid_name(desc.uuid());
+                std::cout << "         DESCRIPTOR " << desc.uuid()
+                          << ": " << dname << "\n";
+            }
+
+            // Track best candidates for bridge command
+            if (best_svc.empty()) best_svc = svc.uuid();
+            if (best_write.empty() &&
+                (chr.can_write_command() || chr.can_write_request()))
+                best_write = chr.uuid();
+            if (best_read.empty() && (chr.can_notify() || chr.can_indicate()))
+                best_read = chr.uuid();
         }
+        std::cout << "\n";
     }
-    std::cout << "\n" << hr('=') << "\n";
-    std::cout << "\nBridge command:\n";
+
+    std::cout << hr('=') << "\n";
+    std::cout << "\nSuggested bridge command:\n";
     std::cout << "  ble_kiss_bridge \\\n"
               << "      --device   " << address << " \\\n"
-              << "      --service  <SERVICE-UUID> \\\n"
-              << "      --write    <WRITE-CHAR-UUID> \\\n"
-              << "      --read     <NOTIFY-CHAR-UUID>\n";
+              << "      --service  " << (best_svc.empty()   ? "<SERVICE-UUID>"  : best_svc)   << " \\\n"
+              << "      --write    " << (best_write.empty() ? "<WRITE-CHAR-UUID>": best_write) << " \\\n"
+              << "      --read     " << (best_read.empty()  ? "<NOTIFY-CHAR-UUID>": best_read) << "\n";
     p.disconnect();
 }
 
