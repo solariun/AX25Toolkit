@@ -697,6 +697,20 @@ void Router::route(std::vector<uint8_t> raw, Millis now) {
         return;
     }
 
+    // No matching session exists for this addressed-to-us frame.
+    // Per AX.25 spec §4.3.3, if the frame is NOT a SABM we must respond
+    // with DM(F=P) so the remote knows we have no connection.
+    // (Silently dropping causes the remote to loop in polling/retransmit limbo.)
+    if (f.type() != Frame::Type::SABM) {
+        Frame dm;
+        dm.dest    = f.src;
+        dm.src     = cfg_.mycall;
+        dm.ctrl    = static_cast<uint8_t>(DM_BASE | (f.get_pf() ? PF_BIT : 0));
+        dm.has_pid = false;
+        tx(dm);
+        return;
+    }
+
     // No session — handle new SABM (incoming connection)
     if (f.type() == Frame::Type::SABM) {
         if (on_accept_) {

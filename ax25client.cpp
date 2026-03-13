@@ -220,6 +220,14 @@ static bool parse_args(int argc, char* argv[], AppCfg& cfg) {
         std::cerr << "Error: connect mode requires a remote callsign  (-r REMOTE)\n";
         return false;
     }
+    if (cfg.mode == Mode::Connect && !cfg.remote.empty() &&
+        Addr::make(cfg.remote) == cfg.ax25.mycall) {
+        std::cerr << "Error: remote callsign (-r " << cfg.remote
+                  << ") cannot be the same as your own callsign (-c "
+                  << cfg.ax25.mycall.str() << ").\n"
+                  << "       A SABM addressed to yourself will never receive a UA reply.\n";
+        return false;
+    }
     return true;
 }
 
