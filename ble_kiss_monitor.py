@@ -262,7 +262,8 @@ async def inspect(address: str) -> None:
 # ── SERIAL BRIDGE + MONITOR mode ──────────────────────────────────────────────
 async def bridge(address: str, service_uuid: str,
                  write_uuid: str, read_uuid: str,
-                 requested_mtu: int = 517) -> None:
+                 requested_mtu: int = 517,
+                 force_response: Optional[bool] = None) -> None:
 
     decoder   = KissDecoder()
     rx_frames = 0
@@ -313,9 +314,10 @@ async def bridge(address: str, service_uuid: str,
 
         # KISS TNCs use write-without-response; fall back to write-with-response
         # only if the characteristic genuinely does not support it.
+        # --write-with-response overrides auto-detection.
         has_wwr = "write-without-response" in write_char.properties
         has_w   = "write" in write_char.properties
-        use_response = not has_wwr and has_w
+        use_response = force_response if force_response is not None else (not has_wwr and has_w)
 
         print(f"  Connected.  MTU requested={requested_mtu}  negotiated={mtu}  chunk={chunk_size}b")
         print(f"  Write char : {write_char.uuid}  props=[{', '.join(write_char.properties)}]  wwr={has_wwr}  response={use_response}")
@@ -439,6 +441,8 @@ def main() -> None:
                    help="Write characteristic UUID  (PTY → BLE)")
     p.add_argument("--read",    metavar="UUID",
                    help="Notify characteristic UUID  (BLE → PTY)")
+    p.add_argument("--write-with-response", action="store_true", default=False,
+                   help="Force write-with-response mode (overrides auto-detection)")
 
     args = p.parse_args()
 
@@ -451,8 +455,9 @@ def main() -> None:
         elif args.inspect:
             asyncio.run(inspect(args.inspect))
         else:
+            force = True if args.write_with_response else None
             asyncio.run(bridge(args.device, args.service, args.write, args.read,
-                               requested_mtu=args.mtu))
+                               requested_mtu=args.mtu, force_response=force))
     except KeyboardInterrupt:
         print("\nInterrupted.")
 
