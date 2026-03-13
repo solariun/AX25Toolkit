@@ -271,12 +271,20 @@ find_peripheral(SimpleBLE::Adapter& adapter,
     std::mutex mx;
     std::atomic<bool> done{false};
 
-    adapter.set_callback_on_scan_found([&](SimpleBLE::Peripheral p) {
-        if (lower(p.address()) == target) {
+    // Match by address OR by name (identifier) — case-insensitive
+    auto check = [&](SimpleBLE::Peripheral p) {
+        if (lower(p.address())    == target ||
+            lower(p.identifier()) == target) {
             std::lock_guard<std::mutex> lk(mx);
             if (!found) { found = p; done = true; }
         }
-    });
+    };
+
+    // set_callback_on_scan_found  → fires for devices seen for the first time
+    // set_callback_on_scan_updated → fires for devices already cached by the adapter
+    // Both are needed: without _updated, a recently-seen device is never matched.
+    adapter.set_callback_on_scan_found  ([&](SimpleBLE::Peripheral p) { check(p); });
+    adapter.set_callback_on_scan_updated([&](SimpleBLE::Peripheral p) { check(p); });
 
     adapter.scan_start();
     auto deadline = std::chrono::steady_clock::now()
