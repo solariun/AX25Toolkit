@@ -66,8 +66,12 @@ SIMPLEBLE_INC = -I$(SIMPLEBLE_DIR)/simpleble/include \
                 $(if $(SIMPLEBLE_KVN),-I$(SIMPLEBLE_KVN))
 
 ifeq ($(UNAME), Linux)
-    SIMPLEBLE_SYS = $(shell pkg-config --libs dbus-1 2>/dev/null || echo "-ldbus-1") -lpthread
+    DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1 2>/dev/null)
+    DBUS_LIBS   := $(shell pkg-config --libs   dbus-1 2>/dev/null || echo "-ldbus-1")
+    SIMPLEBLE_SYS = $(DBUS_LIBS) -lpthread
+    SIMPLEBLE_INC += $(DBUS_CFLAGS)
 else
+    DBUS_CFLAGS :=
     SIMPLEBLE_SYS = -framework CoreBluetooth -framework Foundation -lpthread
 endif
 
