@@ -27,6 +27,7 @@ interactive KISS terminal, and a 92-test GoogleTest suite.
 13. [BASIC Scripting](#13-basic-scripting)
 14. [APRS Helpers (ax25::aprs)](#14-aprs-helpers-ax25aprs)
 15. [ax25client — TNC Terminal Client](#15-ax25client--tnc-terminal-client)
+16. [ble_kiss_monitor.py — BLE KISS Scanner & AX.25 Monitor](#16-ble_kiss_monitorpy--ble-kiss-scanner--ax25-monitor)
 
 ---
 
@@ -2164,3 +2165,114 @@ END
   necessarily a disconnect.
 - The script exits cleanly at `END` or when it falls off the bottom;
   `ax25client` then disconnects automatically.
+
+---
+
+## 16. ble_kiss_monitor.py — BLE KISS Scanner & AX.25 Monitor
+
+`ble_kiss_monitor.py` is a pure-Python companion tool for debugging and
+monitoring AX.25/KISS traffic through Bluetooth Low Energy TNCs (Mobilinkd,
+WB2OSZ NinoTNC-BT, or any BLE-UART bridge paired with a KISS TNC).
+
+### Requirements
+
+```bash
+pip install bleak
+```
+
+### Three operating modes
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| `scan` | `--scan` | Discover nearby BLE devices, show name / address / RSSI / advertised services |
+| `inspect` | `--inspect ADDR` | Connect and enumerate every GATT service + characteristic with properties and current values |
+| `monitor` | `--device ADDR` | Subscribe to notify characteristic and decode every KISS/AX.25 frame in real time |
+
+### Quick start
+
+```bash
+# 1. Find devices
+python3 ble_kiss_monitor.py --scan --timeout 15
+
+# 2. Identify service/characteristic UUIDs
+python3 ble_kiss_monitor.py --inspect AA:BB:CC:DD:EE:FF
+
+# 3. Monitor AX.25 traffic
+python3 ble_kiss_monitor.py \
+    --device   AA:BB:CC:DD:EE:FF \
+    --service  00000001-ba2a-46c9-ae49-01b0961f68bb \
+    --write    00000003-ba2a-46c9-ae49-01b0961f68bb \
+    --read     00000002-ba2a-46c9-ae49-01b0961f68bb
+```
+
+### Scan output
+
+```
+────────────────────────────────────────────────────────────────────
+  Name   : Mobilinkd TNC4
+  Address: AA:BB:CC:DD:EE:FF
+  RSSI   : -61 dBm
+  Services advertised:
+    00000001-ba2a-46c9-ae49-01b0961f68bb
+```
+
+### Inspect output
+
+```
+════════════════════════════════════════════════════════════════════
+Service : 00000001-ba2a-46c9-ae49-01b0961f68bb
+          Unknown
+
+  Characteristic: 00000002-ba2a-46c9-ae49-01b0961f68bb
+  Handle        : 0x0003
+  Properties    : notify | read
+  Description   : Unknown
+
+  Characteristic: 00000003-ba2a-46c9-ae49-01b0961f68bb
+  Handle        : 0x0005
+  Properties    : write | write-without-response
+  Description   : Unknown
+```
+
+The tool prints a ready-to-use `--device` / `--service` / `--write` / `--read`
+command at the end of inspect output.
+
+### Monitor output
+
+Each BLE notification is decoded through the KISS state machine and then
+fully decoded as AX.25:
+
+```
+────────────────────────────────────────────────────────────────────
+[19:55:23.938]  ← BLE RX   18 bytes  raw: c0008e64aa8e964062...3fc0
+  KISS  port=0  type=0(DATA)
+  AX25  payload (16b): 8e64aa8e964062...3f
+  ┌─ G2UGK-3 → G2UGK-1  [SABM(P)]
+  │  ctrl=0x3F  type=SABM
+  └─
+
+[19:55:25.120]  ← BLE RX   20 bytes  raw: c0008e64...f063c0
+  KISS  port=0  type=0(DATA)
+  AX25  payload (18b): ...
+  ┌─ G2UGK-1 → G2UGK-3  [I(NS=0,NR=0)] PID=NoL3
+  │  ctrl=0x00  type=I
+  └─ info (8b): "Hello!\r\n"
+```
+
+### Frame types decoded
+
+| Class | Examples |
+|-------|---------|
+| U-frames | SABM, UA, DM, DISC, FRMR, UI (with P/F flag) |
+| I-frames | NS, NR, P/F, PID name, info payload as ASCII |
+| S-frames | RR, RNR, REJ, SREJ with NR and P/F |
+| KISS commands | DATA, TXDELAY, P, SLOTTIME, TXTAIL, FULLDUPLEX, SETHW, RETURN |
+
+### Common TNC BLE UUIDs
+
+| TNC | Service | Write char | Read/Notify char |
+|-----|---------|-----------|-----------------|
+| Mobilinkd TNC3/TNC4 | `00000001-ba2a-46c9-ae49-01b0961f68bb` | `00000003-…` | `00000002-…` |
+| Nordic UART (generic) | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | `6e400002-…` | `6e400003-…` |
+
+Use `--inspect` to confirm UUIDs for your specific device.
