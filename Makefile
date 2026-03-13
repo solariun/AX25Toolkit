@@ -53,8 +53,20 @@ LIB_OBJ   = ax25lib.o
 BASIC_SRC = basic.cpp
 BASIC_OBJ = basic.o
 
+# ── SimpleBLE (vendor build) ──────────────────────────────────────────────────
+SIMPLEBLE_DIR = vendor/simpleble
+SIMPLEBLE_INC = $(SIMPLEBLE_DIR)/simpleble/include
+
+ifeq ($(UNAME), Linux)
+    SIMPLEBLE_SYS = $(shell pkg-config --libs dbus-1 2>/dev/null || echo "-ldbus-1") -lpthread
+else
+    SIMPLEBLE_SYS = -framework CoreBluetooth -framework Foundation -lpthread
+endif
+
+NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+
 # ── Targets ───────────────────────────────────────────────────────────────────
-.PHONY: all clean test install-deps
+.PHONY: all clean test install-deps ble-deps ble_kiss_bridge
 
 all: bbs ax25kiss ax25client
 
@@ -81,11 +93,43 @@ test_ax25lib: test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) ax25lib.hpp basic.hpp ini
 test: test_ax25lib
 	./test_ax25lib --gtest_color=yes
 
+ble-deps:
+	@if [ -d $(SIMPLEBLE_DIR)/simpleble/include/simpleble ]; then \
+	    echo "SimpleBLE already present at $(SIMPLEBLE_DIR)."; \
+	else \
+	    echo "Cloning SimpleBLE..."; \
+	    git clone --depth 1 https://github.com/OpenBluetoothToolbox/SimpleBLE $(SIMPLEBLE_DIR); \
+	fi
+	@echo "Building SimpleBLE (static)..."
+	cmake -S $(SIMPLEBLE_DIR)/simpleble \
+	      -B $(SIMPLEBLE_DIR)/build \
+	      -DCMAKE_BUILD_TYPE=Release \
+	      -DSIMPLEBLE_BUILD_SHARED_LIBS=OFF \
+	      -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+	cmake --build $(SIMPLEBLE_DIR)/build --config Release -j$(NPROC)
+	@echo ""
+	@echo "SimpleBLE ready.  Now run:  make ble_kiss_bridge"
+
+ble_kiss_bridge: ble_kiss_bridge.cpp
+	$(eval BLE_LIB := $(shell find $(SIMPLEBLE_DIR)/build -name 'libsimpleble*.a' 2>/dev/null | head -1))
+	@if [ -z "$(BLE_LIB)" ]; then \
+	    echo "ERROR: SimpleBLE library not found.  Run: make ble-deps"; exit 1; fi
+	$(CXX) -std=c++17 -O2 -Wall -Wextra \
+	    -I$(SIMPLEBLE_INC) \
+	    -o $@ ble_kiss_bridge.cpp \
+	    $(BLE_LIB) $(SIMPLEBLE_SYS)
+	@echo "Built: ble_kiss_bridge"
+
 clean:
-	rm -f $(LIB_OBJ) $(BASIC_OBJ) bbs ax25kiss ax25client test_ax25lib
+	rm -f $(LIB_OBJ) $(BASIC_OBJ) bbs ax25kiss ax25client test_ax25lib ble_kiss_bridge
 
 install-deps:
 	@echo "Install dependencies:"
-	@echo "  macOS  : brew install googletest sqlite"
-	@echo "  Ubuntu : sudo apt-get install libgtest-dev libsqlite3-dev"
-	@echo "  Fedora : sudo dnf install gtest-devel sqlite-devel"
+	@echo "  macOS  : brew install googletest sqlite cmake"
+	@echo "  Ubuntu : sudo apt-get install libgtest-dev libsqlite3-dev cmake libdbus-1-dev"
+	@echo "  Fedora : sudo dnf install gtest-devel sqlite-devel cmake dbus-devel"
+	@echo ""
+	@echo "BLE bridge (ble_kiss_bridge):"
+	@echo "  All platforms : cmake required (see above)"
+	@echo "  Linux only    : libdbus-1-dev (BlueZ backend)"
+	@echo "  Then run      : make ble-deps && make ble_kiss_bridge"
