@@ -662,8 +662,10 @@ static void do_inspect(const std::string& address) {
 // ─────────────────────────────────────────────────────────────────────────────
 struct BridgeConfig {
     std::string address, service_uuid, write_uuid, read_uuid;
+    std::string link_path = "/tmp/kiss"; // symlink → PTY slave (empty = no link)
     int    mtu     = 517;
     double timeout = 10.0;
+    bool   monitor = false;             // print per-frame hex + AX.25 decode
     std::optional<bool> force_response; // nullopt = auto-detect
 };
 
@@ -672,16 +674,29 @@ static void do_bridge(const BridgeConfig& cfg) {
     std::string slave_path;
     if (!open_pty(master_fd, slave_fd, slave_path)) return;
 
+    // ── Symlink PTY slave to a stable path ───────────────────────────────
+    if (!cfg.link_path.empty()) {
+        ::unlink(cfg.link_path.c_str());  // remove stale link
+        if (::symlink(slave_path.c_str(), cfg.link_path.c_str()) < 0)
+            std::cerr << "Warning: symlink " << cfg.link_path
+                      << ": " << strerror(errno) << "\n";
+    }
+    std::string display_path = (!cfg.link_path.empty()) ? cfg.link_path : slave_path;
+
     std::cout << hr('=') << "\n";
-    std::cout << "  BLE KISS Serial Bridge + AX.25 Monitor\n";
+    std::cout << "  BLE KISS Serial Bridge"
+              << (cfg.monitor ? " + AX.25 Monitor" : "") << "\n";
     std::cout << hr('=') << "\n";
     std::cout << "  Device     : " << cfg.address << "\n";
     std::cout << "  Service    : " << cfg.service_uuid << "\n";
     std::cout << "  Read char  : " << cfg.read_uuid << "  (notify -> PTY)\n";
     std::cout << "  Write char : " << cfg.write_uuid << "  (PTY -> BLE)\n";
     std::cout << hr() << "\n";
-    std::cout << "  Virtual serial port:\n\n      " << slave_path << "\n\n";
-    std::cout << "  Example:\n      ax25client -c W1AW -r W1BBS-1 " << slave_path << "\n";
+    std::cout << "  PTY device : " << slave_path << "\n";
+    if (!cfg.link_path.empty())
+        std::cout << "  Symlink    : " << cfg.link_path << "  -> " << slave_path << "\n";
+    std::cout << "\n";
+    std::cout << "  Example:\n      ax25client -c W1AW -r W1BBS-1 " << display_path << "\n";
     std::cout << hr() << "\n  Connecting to BLE...\n";
     std::cout.flush();
 
@@ -728,7 +743,9 @@ static void do_bridge(const BridgeConfig& cfg) {
               << "  chunk=" << chunk_size << "b"
               << "  wwr=" << (can_wwr ? "yes" : "no")
               << "  response=" << (use_response ? "yes" : "no") << "\n";
-    std::cout << "  Monitoring traffic.  Ctrl-C to stop.\n\n";
+    std::cout << (cfg.monitor ? "  Monitor on.  Ctrl-C to stop.\n"
+                              : "  Running.     Ctrl-C to stop.\n");
+    std::cout << "\n";
     std::cout.flush();
 
     KissDecoder decoder;
@@ -752,36 +769,37 @@ static void do_bridge(const BridgeConfig& cfg) {
             std::lock_guard<std::mutex> lk(mx);
 
             // Write raw bytes to PTY master
-            if (write(master_fd, d, n) < 0) {
-                std::cout << "  PTY write error: " << strerror(errno) << "\n";
-            }
+            if (write(master_fd, d, n) < 0)
+                std::cerr << "  PTY write error: " << strerror(errno) << "\n";
             ++rx_frames;
 
-            std::string t = ts();
-            auto frames = decoder.feed(d, n);
+            if (cfg.monitor) {
+                std::string t = ts();
+                auto frames = decoder.feed(d, n);
 
-            std::cout << "\n" << hr() << "\n";
-            std::cout << "[" << t << "]  <- BLE->PTY  " << n
-                      << " bytes  raw: " << hexdump(d, n) << "\n";
+                std::cout << "\n" << hr() << "\n";
+                std::cout << "[" << t << "]  <- BLE->PTY  " << n
+                          << " bytes  raw: " << hexdump(d, n) << "\n";
 
-            if (frames.empty()) {
-                std::cout << "  (buffering - no complete KISS frame yet)\n";
-            }
-            for (auto& kf : frames) {
-                const char* cmd_names[] = {"DATA","TXDELAY","P","SLOTTIME",
-                                           "TXTAIL","FULLDUPLEX","SETHW","?","?",
-                                           "?","?","?","?","?","?","RETURN"};
-                std::cout << "  KISS  port=" << kf.port
-                          << "  type=" << kf.type
-                          << "(" << cmd_names[kf.type & 0xF] << ")\n";
-                std::cout << "  AX25  payload (" << kf.payload.size() << "b): "
-                          << hexdump(kf.payload.data(), kf.payload.size()) << "\n";
-                if (kf.type == 0 && !kf.payload.empty()) {
-                    auto ax = decode_ax25(kf.payload.data(), kf.payload.size());
-                    print_ax25(ax);
+                if (frames.empty()) {
+                    std::cout << "  (buffering - no complete KISS frame yet)\n";
                 }
+                for (auto& kf : frames) {
+                    const char* cmd_names[] = {"DATA","TXDELAY","P","SLOTTIME",
+                                               "TXTAIL","FULLDUPLEX","SETHW","?","?",
+                                               "?","?","?","?","?","?","RETURN"};
+                    std::cout << "  KISS  port=" << kf.port
+                              << "  type=" << kf.type
+                              << "(" << cmd_names[kf.type & 0xF] << ")\n";
+                    std::cout << "  AX25  payload (" << kf.payload.size() << "b): "
+                              << hexdump(kf.payload.data(), kf.payload.size()) << "\n";
+                    if (kf.type == 0 && !kf.payload.empty()) {
+                        auto ax = decode_ax25(kf.payload.data(), kf.payload.size());
+                        print_ax25(ax);
+                    }
+                }
+                std::cout.flush();
             }
-            std::cout.flush();
         });
 
     // ── PTY -> BLE main loop ──────────────────────────────────────────────
@@ -802,7 +820,7 @@ static void do_bridge(const BridgeConfig& cfg) {
         if (nr <= 0) continue;
 
         ++tx_frames;
-        {
+        if (cfg.monitor) {
             std::lock_guard<std::mutex> lk(mx);
             std::cout << "\n" << hr() << "\n";
             std::cout << "[" << ts() << "]  -> PTY->BLE  " << nr
@@ -832,6 +850,7 @@ static void do_bridge(const BridgeConfig& cfg) {
     try { peripheral.disconnect(); } catch (...) {}
     close(master_fd);
     close(slave_fd);
+    if (!cfg.link_path.empty()) ::unlink(cfg.link_path.c_str());
 
     std::cout << "\n" << hr() << "\n";
     std::cout << "  Session ended.  RX frames: " << rx_frames.load()
@@ -850,14 +869,21 @@ static void usage(const char* prog) {
         "  " << prog << " --inspect <ADDRESS>\n"
         "  " << prog << " --device <ADDRESS>\n"
         "             --service <UUID> --write <UUID> --read <UUID>\n"
-        "             [--mtu <bytes>] [--write-with-response]\n\n"
+        "             [--mtu <bytes>] [--write-with-response]\n"
+        "             [--link <path>] [--monitor]\n\n"
+        "Options (device mode):\n"
+        "  --link <path>          Symlink created pointing to the PTY slave\n"
+        "                         Default: /tmp/kiss  (use --link '' to disable)\n"
+        "  --monitor              Print per-frame hex + AX.25 decode to stdout\n"
+        "                         (silent by default — only connection info shown)\n\n"
         "Examples:\n"
         "  " << prog << " --scan --timeout 15\n"
         "  " << prog << " --inspect AA:BB:CC:DD:EE:FF\n"
         "  " << prog << " --device AA:BB:CC:DD:EE:FF \\\n"
         "             --service 00000001-ba2a-46c9-ae49-01b0961f68bb \\\n"
         "             --write   00000003-ba2a-46c9-ae49-01b0961f68bb \\\n"
-        "             --read    00000002-ba2a-46c9-ae49-01b0961f68bb\n\n"
+        "             --read    00000002-ba2a-46c9-ae49-01b0961f68bb \\\n"
+        "             --link /tmp/kiss --monitor\n\n"
         "Build:\n"
         "  make ble-deps        # clone + build SimpleBLE (one time)\n"
         "  make ble_kiss_bridge\n";
@@ -879,6 +905,8 @@ int main(int argc, char* argv[]) {
         else if (a == "--mtu"               && i+1 < argc) { cfg.mtu          = std::stoi(argv[++i]); }
         else if (a == "--timeout"           && i+1 < argc) { timeout          = std::stod(argv[++i]); }
         else if (a == "--write-with-response")             { cfg.force_response = true; }
+        else if (a == "--monitor")                         { cfg.monitor        = true; }
+        else if (a == "--link"              && i+1 < argc) { cfg.link_path      = argv[++i]; }
         else { std::cerr << "Unknown argument: " << a << "\n"; usage(argv[0]); return 1; }
     }
 
