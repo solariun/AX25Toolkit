@@ -3,6 +3,7 @@ ax25lib.o
 bbs
 ax25kiss
 test_ax25lib
+ax25Client
 
 # macOS metadata
 .DS_Store
@@ -13,6 +14,11 @@ test_ax25lib
 .vscode/
 .idea/
 *.orig
+bin/
+lib/
+**/*venv*
 
 # Dependency files
 *.d
+*.o
+vendor/

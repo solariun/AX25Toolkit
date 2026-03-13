@@ -28,6 +28,7 @@ interactive KISS terminal, and a 92-test GoogleTest suite.
 14. [APRS Helpers (ax25::aprs)](#14-aprs-helpers-ax25aprs)
 15. [ax25client — TNC Terminal Client](#15-ax25client--tnc-terminal-client)
 16. [ble_kiss_monitor.py — BLE KISS Scanner & AX.25 Monitor](#16-ble_kiss_monitorpy--ble-kiss-scanner--ax25-monitor)
+17. [ble_kiss_bridge — C++ BLE KISS Bridge](#17-ble_kiss_bridge--c-ble-kiss-bridge)
 
 ---
 
@@ -449,29 +450,35 @@ sequenceDiagram
 
 | Platform | Compiler | Required | Optional |
 |----------|----------|----------|----------|
-| macOS    | Xcode CLT (`xcode-select --install`) | — | `brew install sqlite` |
-| Linux    | `g++` ≥ 7 | `build-essential` | `libsqlite3-dev` |
+| macOS    | Xcode CLT (`xcode-select --install`) | — | `brew install sqlite cmake` |
+| Linux    | `g++` ≥ 7 | `build-essential` | `libsqlite3-dev cmake libdbus-1-dev` |
 
 **SQLite3** — needed for the `DBOPEN/DBEXEC/DBQUERY` BASIC commands.
 The Makefile auto-detects it via `pkg-config`; everything else compiles without it.
 
+**cmake** — needed only for `ble_kiss_bridge` (see §17).
+
 ```bash
 # macOS
-brew install googletest sqlite
+brew install googletest sqlite cmake
 
 # Ubuntu / Debian
-sudo apt-get install libgtest-dev libsqlite3-dev
+sudo apt-get install libgtest-dev libsqlite3-dev cmake libdbus-1-dev
 
 # Fedora
-sudo dnf install gtest-devel sqlite-devel
+sudo dnf install gtest-devel sqlite-devel cmake dbus-devel
 ```
 
 ### Build targets
 
 ```bash
-make            # build bbs, ax25kiss, and ax25client
-make test       # compile and run all 69 unit tests
-make clean      # remove all build artefacts
+make                  # build bbs, ax25kiss, and ax25client
+make test             # compile and run all unit tests
+make clean            # remove all build artefacts
+
+# BLE bridge (requires cmake — see §17)
+make ble-deps         # clone + build SimpleBLE into vendor/simpleble  (once)
+make ble_kiss_bridge  # build the C++ BLE KISS bridge
 ```
 
 To cross-compile or choose a different compiler:
@@ -2276,3 +2283,69 @@ fully decoded as AX.25:
 | Nordic UART (generic) | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | `6e400002-…` | `6e400003-…` |
 
 Use `--inspect` to confirm UUIDs for your specific device.
+
+---
+
+## 17. ble_kiss_bridge — C++ BLE KISS Bridge
+
+`ble_kiss_bridge` is a native C++17 companion to `ble_kiss_monitor.py`, offering
+the same three modes with no Python dependency.  It uses
+[SimpleBLE](https://github.com/OpenBluetoothToolbox/SimpleBLE) which
+wraps **BlueZ** on Linux and **CoreBluetooth** on macOS.
+
+### Build
+
+```bash
+# 1 — install cmake (once)
+#   macOS : brew install cmake
+#   Ubuntu: sudo apt-get install cmake libdbus-1-dev
+
+# 2 — clone and build SimpleBLE (once, stored in vendor/simpleble)
+make ble-deps
+
+# 3 — compile
+make ble_kiss_bridge
+```
+
+### Three operating modes
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| `scan` | `--scan` | Discover nearby BLE devices sorted by RSSI |
+| `inspect` | `--inspect ADDR` | Connect and list all GATT services / characteristics |
+| `bridge` | `--device ADDR` | Create a PTY serial port bridged to the BLE TNC |
+
+### Quick start
+
+```bash
+# 1. Find devices
+./ble_kiss_bridge --scan --timeout 15
+
+# 2. Identify UUIDs
+./ble_kiss_bridge --inspect AA:BB:CC:DD:EE:FF
+
+# 3. Start PTY bridge
+./ble_kiss_bridge \
+    --device   AA:BB:CC:DD:EE:FF \
+    --service  00000001-ba2a-46c9-ae49-01b0961f68bb \
+    --write    00000003-ba2a-46c9-ae49-01b0961f68bb \
+    --read     00000002-ba2a-46c9-ae49-01b0961f68bb
+
+# 4. Use the printed PTY path with ax25client
+ax25client -c W1AW -r W1BBS-1 /dev/pts/3
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mtu N` | 517 | Cap BLE write chunk to N bytes (actual MTU negotiated by OS) |
+| `--write-with-response` | off | Force write-with-response (auto-detected by default) |
+| `--timeout S` | 10 | Scan / connect timeout in seconds |
+
+### Notes
+
+- **macOS**: CoreBluetooth handles MTU negotiation automatically; `--mtu` acts as a chunk-size cap.
+- **Linux**: BlueZ negotiates MTU during connect; `--mtu` also acts as a cap.
+- The tool auto-detects write mode: prefers *write-without-response* when the characteristic supports it; falls back to *write-with-response*; use `--write-with-response` to override.
+- `vendor/simpleble` is excluded from git (`.gitignore`).
