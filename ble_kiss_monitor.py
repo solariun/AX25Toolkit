@@ -302,24 +302,23 @@ async def bridge(address: str, service_uuid: str,
         mtu        = client.mtu_size
         chunk_size = max(1, mtu - 3)   # ATT overhead = 3 bytes
 
-        # Explicitly await full service discovery — async with only calls
-        # connect(); on some backends _services_resolved stays False until
-        # get_services() is awaited, causing write_gatt_char to error.
-        svcs = await client.get_services()
-        write_char = svcs.get_characteristic(write_uuid)
+        write_char = client.services.get_characteristic(write_uuid)
         if write_char is None:
             print(f"  ERROR: write characteristic {write_uuid} not found in discovered services.")
             print(f"  Available characteristics:")
-            for svc in svcs:
+            for svc in client.services:
                 for ch in svc.characteristics:
                     print(f"    {ch.uuid}  [{', '.join(ch.properties)}]")
             return
 
-        # Prefer write-without-response for throughput (KISS TNC standard)
-        use_response = "write-without-response" not in write_char.properties
+        # KISS TNCs use write-without-response; fall back to write-with-response
+        # only if the characteristic genuinely does not support it.
+        has_wwr = "write-without-response" in write_char.properties
+        has_w   = "write" in write_char.properties
+        use_response = not has_wwr and has_w
 
         print(f"  Connected.  MTU requested={requested_mtu}  negotiated={mtu}  chunk={chunk_size}b")
-        print(f"  Write char : {write_char.uuid}  props=[{', '.join(write_char.properties)}]  response={use_response}")
+        print(f"  Write char : {write_char.uuid}  props=[{', '.join(write_char.properties)}]  wwr={has_wwr}  response={use_response}")
         print(f"  Monitoring traffic.  Ctrl-C to stop.\n")
 
         loop = asyncio.get_running_loop()
