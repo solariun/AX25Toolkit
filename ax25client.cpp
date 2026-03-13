@@ -429,7 +429,7 @@ static int run_connect(Kiss& kiss, Router& router, const AppCfg& cfg) {
                 rx_lines.push_back(line_in);
                 // In interactive (non-script) mode also print to stdout
                 if (cfg.script.empty())
-                    std::cout << CYAN() << "< " << RESET() << line_in << "\n" << std::flush;
+                    std::cout << line_in << "\n" << std::flush;
             }
         };
     };
@@ -477,8 +477,7 @@ static int run_connect(Kiss& kiss, Router& router, const AppCfg& cfg) {
             if (conn->send(s)) {
                 st.bytes_tx += s.size();
                 ++st.frames_tx;
-                std::cout << GREEN() << "> " << RESET()
-                          << s.substr(0, s.size()>80?80:s.size()) << "\n" << std::flush;
+                std::cout << s.substr(0, s.size()>80?80:s.size()) << "\n" << std::flush;
             }
         };
 
@@ -614,7 +613,7 @@ static int run_connect(Kiss& kiss, Router& router, const AppCfg& cfg) {
             st.bytes_tx += payload.size();
             ++st.frames_tx;
             // Echo locally
-            std::cout << GREEN() << "> " << RESET() << line << "\n" << std::flush;
+            std::cout << line << "\n" << std::flush;
         } else {
             std::cout << RED() << "[Send failed — connection may have dropped]"
                       << RESET() << "\n" << std::flush;
