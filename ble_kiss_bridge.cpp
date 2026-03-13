@@ -18,6 +18,7 @@
 #  include <util.h>
 #else
 #  include <pty.h>
+#  include <dbus/dbus.h>   // BlueZ SetDiscoveryFilter (Linux only)
 #endif
 
 #include <simpleble/SimpleBLE.h>
@@ -261,10 +262,83 @@ static std::optional<SimpleBLE::Adapter> get_adapter() {
     return adapters[0];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Linux-only: tell BlueZ to do an active LE scan filtered to a service UUID.
+//
+// bleak does this via BleakScanner(service_uuids=[...]) which calls
+// org.bluez.Adapter1.SetDiscoveryFilter({"UUIDs":[uuid],"Transport":"le"}).
+// Without it, BlueZ may do a passive scan and never surface the device.
+//
+// BlueZ merges filters from every D-Bus client, so our call is additive
+// with whatever SimpleBLE already sets.  Safe to call before scan_start().
+// ─────────────────────────────────────────────────────────────────────────────
+#ifdef __linux__
+static void bluez_set_discovery_filter(const std::string& adapter_id,
+                                       const std::string& service_uuid)
+{
+    if (service_uuid.empty()) return;
+
+    DBusError err;
+    dbus_error_init(&err);
+
+    DBusConnection* conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
+    if (!conn || dbus_error_is_set(&err)) {
+        dbus_error_free(&err);
+        return; // not fatal — scan will proceed without the filter
+    }
+
+    std::string obj_path = "/org/bluez/" + adapter_id;
+
+    DBusMessage* msg = dbus_message_new_method_call(
+        "org.bluez", obj_path.c_str(), "org.bluez.Adapter1", "SetDiscoveryFilter");
+    if (!msg) { dbus_connection_unref(conn); return; }
+
+    // Build argument: a{sv}  →  {"UUIDs": as["uuid"], "Transport": s"le"}
+    DBusMessageIter args, dict, entry, variant, arr;
+    dbus_message_iter_init_append(msg, &args);
+    dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &dict);
+
+    // "UUIDs" → ["service_uuid"]
+    {
+        const char* key = "UUIDs";
+        dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
+        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+        dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "as", &variant);
+        dbus_message_iter_open_container(&variant, DBUS_TYPE_ARRAY, "s", &arr);
+        const char* uuid_c = service_uuid.c_str();
+        dbus_message_iter_append_basic(&arr, DBUS_TYPE_STRING, &uuid_c);
+        dbus_message_iter_close_container(&variant, &arr);
+        dbus_message_iter_close_container(&entry, &variant);
+        dbus_message_iter_close_container(&dict, &entry);
+    }
+
+    // "Transport" → "le"
+    {
+        const char* key = "Transport";
+        const char* val = "le";
+        dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
+        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+        dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "s", &variant);
+        dbus_message_iter_append_basic(&variant, DBUS_TYPE_STRING, &val);
+        dbus_message_iter_close_container(&entry, &variant);
+        dbus_message_iter_close_container(&dict, &entry);
+    }
+
+    dbus_message_iter_close_container(&args, &dict);
+
+    DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn, msg, 2000, &err);
+    dbus_message_unref(msg);
+    if (reply) dbus_message_unref(reply);
+    if (dbus_error_is_set(&err)) dbus_error_free(&err); // non-fatal
+    dbus_connection_unref(conn);
+}
+#endif // __linux__
+
 static std::optional<SimpleBLE::Peripheral>
 find_peripheral(SimpleBLE::Adapter& adapter,
                 const std::string& address,
-                int timeout_ms)
+                int timeout_ms,
+                const std::string& service_uuid = "")
 {
     std::string target = lower(address);
     std::optional<SimpleBLE::Peripheral> found;
@@ -285,6 +359,12 @@ find_peripheral(SimpleBLE::Adapter& adapter,
     // Both are needed: without _updated, a recently-seen device is never matched.
     adapter.set_callback_on_scan_found  ([&](SimpleBLE::Peripheral p) { check(p); });
     adapter.set_callback_on_scan_updated([&](SimpleBLE::Peripheral p) { check(p); });
+
+#ifdef __linux__
+    // Mirror what bleak does: set BlueZ discovery filter to the service UUID
+    // so BlueZ uses active LE scanning for this specific service.
+    bluez_set_discovery_filter(adapter.identifier(), service_uuid);
+#endif
 
     adapter.scan_start();
     auto deadline = std::chrono::steady_clock::now()
@@ -429,7 +509,8 @@ static void do_bridge(const BridgeConfig& cfg) {
     if (!opt) { close(master_fd); close(slave_fd); return; }
     auto& adapter = *opt;
 
-    auto popt = find_peripheral(adapter, cfg.address, (int)(cfg.timeout * 1000));
+    auto popt = find_peripheral(adapter, cfg.address, (int)(cfg.timeout * 1000),
+                               cfg.service_uuid);
     if (!popt) {
         std::cerr << "Device " << cfg.address << " not found.\n";
         close(master_fd); close(slave_fd); return;
