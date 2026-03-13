@@ -292,7 +292,22 @@ async def bridge(address: str, service_uuid: str,
         mtu        = client.mtu_size
         chunk_size = max(1, mtu - 3)   # ATT overhead = 3 bytes
 
+        # Resolve characteristic objects immediately after connect so
+        # write_gatt_char never hits "Service Discovery has not been performed".
+        write_char = client.services.get_characteristic(write_uuid)
+        if write_char is None:
+            print(f"  ERROR: write characteristic {write_uuid} not found in discovered services.")
+            print(f"  Available characteristics:")
+            for svc in client.services:
+                for ch in svc.characteristics:
+                    print(f"    {ch.uuid}  [{', '.join(ch.properties)}]")
+            return
+
+        # Prefer write-without-response for throughput (KISS TNC standard)
+        use_response = "write-without-response" not in write_char.properties
+
         print(f"  Connected.  MTU={mtu}  chunk={chunk_size}b")
+        print(f"  Write char : {write_char.uuid}  props=[{', '.join(write_char.properties)}]  response={use_response}")
         print(f"  Monitoring traffic.  Ctrl-C to stop.\n")
 
         loop = asyncio.get_running_loop()
@@ -360,8 +375,8 @@ async def bridge(address: str, service_uuid: str,
                 try:
                     for i in range(0, len(payload), chunk_size):
                         chunk = payload[i : i + chunk_size]
-                        await client.write_gatt_char(write_uuid, chunk,
-                                                     response=False)
+                        await client.write_gatt_char(write_char, chunk,
+                                                     response=use_response)
                 except Exception as e:
                     print(f"  BLE write error: {e}")
 
