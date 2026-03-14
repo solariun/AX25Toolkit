@@ -1143,6 +1143,7 @@ int main(int argc, char* argv[]) {
     std::string mode;
     BridgeConfig cfg;
     double timeout = 10.0;
+    bool link_explicit = false;   // true only when --link is explicitly passed
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -1159,21 +1160,27 @@ int main(int argc, char* argv[]) {
         else if (a == "--server-host"       && i+1 < argc) { cfg.server_host  = argv[++i]; }
         else if (a == "--write-with-response")             { cfg.force_response = true; }
         else if (a == "--monitor")                         { cfg.monitor        = true; }
-        else if (a == "--link"              && i+1 < argc) { cfg.link_path      = argv[++i]; }
+        else if (a == "--link"              && i+1 < argc) { cfg.link_path = argv[++i]; link_explicit = true; }
         else { std::cerr << "Unknown argument: " << a << "\n"; usage(argv[0]); return 1; }
     }
 
     cfg.timeout = timeout;
 
+    // In TCP mode the default /tmp/kiss symlink is irrelevant — clear it
+    // unless the user explicitly asked for --link (which is an error).
+    if (cfg.server_port > 0) {
+        if (link_explicit) {
+            std::cerr << "Error: --server-port (TCP mode) and --link (PTY mode) are mutually exclusive.\n"
+                         "       TCP mode does not create a PTY.  Drop --link or drop --server-port.\n";
+            return 1;
+        }
+        cfg.link_path.clear();   // discard the default "/tmp/kiss"
+    }
+
     if (mode.empty()) { usage(argv[0]); return 1; }
     if (mode == "device" &&
         (cfg.service_uuid.empty() || cfg.write_uuid.empty() || cfg.read_uuid.empty())) {
         std::cerr << "--device requires --service, --write, and --read\n";
-        return 1;
-    }
-    if (mode == "device" && cfg.server_port > 0 && !cfg.link_path.empty()) {
-        std::cerr << "Error: --server-port (TCP mode) and --link (PTY mode) are mutually exclusive.\n"
-                     "       TCP mode does not create a PTY.  Drop --link or drop --server-port.\n";
         return 1;
     }
 
