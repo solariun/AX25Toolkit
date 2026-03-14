@@ -171,6 +171,7 @@ struct AppCfg {
     int         baud     = 9600;
     std::string script;                   // path to BASIC script (-s); empty = interactive
     int         ka_ms    = 60000;         // app-level keep-alive interval ms (0=off)
+    bool        debug    = false;         // verbose routing debug output (-D)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,6 +227,7 @@ static void print_usage(const char* prog) {
         << "  -b BAUD      Baud rate for serial (default: 9600; ignored for TCP)\n"
         << "  -p PATH      Digipeater path, comma-separated\n"
         << "  -M           Enable monitor output\n"
+        << "  -D           Enable debug output (verbose routing info)\n"
         << "  -w WIN       Window size 1-7 (default: 3)\n"
         << "  -t T1        T1 retransmit timer ms (default: 3000)\n"
         << "  -k T3        T3 keep-alive timer ms (default: 60000)\n"
@@ -272,7 +274,7 @@ static bool parse_args(int argc, char* argv[], AppCfg& cfg) {
     bool mode_explicit = false;
 
     int opt, idx = 0;
-    while ((opt = getopt_long(argc, argv, "c:r:m:d:b:p:Mw:t:k:n:s:h", longopts, &idx)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:r:m:d:b:p:Mw:t:k:n:s:Dh", longopts, &idx)) != -1) {
         switch (opt) {
         case 'c': cfg.ax25.mycall = Addr::make(optarg); break;
         case 'r': cfg.remote      = optarg; break;
@@ -291,6 +293,7 @@ static bool parse_args(int argc, char* argv[], AppCfg& cfg) {
             break;
         }
         case 'M': cfg.monitor     = true; break;
+        case 'D': cfg.debug       = true; break;
         case 'w': cfg.ax25.window = std::max(1, std::min(7, std::atoi(optarg))); break;
         case 't': cfg.ax25.t1_ms  = std::atoi(optarg); break;
         case 'k': cfg.ax25.t3_ms  = std::atoi(optarg); break;
@@ -955,7 +958,9 @@ static bool parse_tnc_command(
         if (rest.empty()) {
             std::cout << "My callsign: " << cfg.ax25.mycall.str() << "\n" << std::flush;
         } else {
-            cfg.ax25.mycall = Addr::make(rest);
+            Addr newcall = Addr::make(rest);
+            cfg.ax25.mycall = newcall;
+            router.config().mycall = newcall;   // update router so incoming frames match
             std::cout << GREEN() << "Callsign set to " << cfg.ax25.mycall.str()
                       << RESET() << "\n" << std::flush;
         }
@@ -1223,6 +1228,7 @@ static int run_tnc(Kiss& kiss, Router& router, AppCfg& cfg) {
     bool        mon_on    = cfg.monitor;
     std::string recv_buf;
     std::deque<std::string> rx_lines;
+    std::vector<Connection*> dead_conns;   // deferred delete list
 
     using Clock = std::chrono::steady_clock;
     auto last_tx = Clock::now();
@@ -1230,6 +1236,21 @@ static int run_tnc(Kiss& kiss, Router& router, AppCfg& cfg) {
     // ── Monitor hook ─────────────────────────────────────────────────────────
     if (mon_on)
         router.on_monitor = [](const Frame& f){ print_frame(f, ">>"); };
+
+    // ── Debug hook: log routing decisions for addressed frames ─────────────
+    if (cfg.debug) {
+        auto prev_mon = router.on_monitor;
+        router.on_monitor = [&, prev_mon](const Frame& f) {
+            if (prev_mon) prev_mon(f);
+            if (f.type() != Frame::Type::UI) {
+                bool match = (f.dest == router.config().mycall);
+                std::cerr << DIM() << "[DEBUG] " << f.format()
+                          << " dest_match=" << (match ? "YES" : "NO")
+                          << " mycall=" << router.config().mycall.str()
+                          << RESET() << "\n" << std::flush;
+            }
+        };
+    }
 
     // ── Connection callbacks (defined as a lambda so we can call recursively
     //    after disconnect to re-arm listen) ───────────────────────────────────
@@ -1245,6 +1266,9 @@ static int run_tnc(Kiss& kiss, Router& router, AppCfg& cfg) {
         };
         c->on_disconnect = [&] {
             data_mode = false;
+            // Schedule old connection for deferred deletion (can't delete inside
+            // its own callback).  The main loop cleans up dead_conns each tick.
+            if (conn) dead_conns.push_back(conn);
             conn = nullptr;
             std::cout << "\n" << RED() << BOLD() << "*** Disconnected ***"
                       << RESET() << "\n\n" << std::flush;
@@ -1321,6 +1345,10 @@ static int run_tnc(Kiss& kiss, Router& router, AppCfg& cfg) {
             select(ser_fd + 1, &fds, nullptr, nullptr, &tv);
         }
         router.poll();
+
+        // ── Deferred cleanup of disconnected connections ─────────────────────
+        for (auto* dc : dead_conns) delete dc;
+        dead_conns.clear();
 
         // ── Double Ctrl+C warning ────────────────────────────────────────────
         if (g_ctrl_c_count == 1 && last_reported_ctrl_c != g_ctrl_c_count) {
@@ -1492,6 +1520,8 @@ static int run_tnc(Kiss& kiss, Router& router, AppCfg& cfg) {
               << "  RX: " << st.frames_rx << " frames / " << st.bytes_rx << " bytes\n";
 
     if (conn) delete conn;
+    for (auto* dc : dead_conns) delete dc;
+    dead_conns.clear();
     return 0;
 }
 
