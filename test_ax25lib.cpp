@@ -14,6 +14,7 @@
 // code that links ax25lib can be compiled with -std=c++11.
 // =============================================================================
 #include "ax25lib.hpp"
+#include "ax25dump.hpp"
 #include "ini.hpp"
 #include "basic.hpp"
 #include <gtest/gtest.h>
@@ -1847,6 +1848,189 @@ TEST(LineTerminator, CRLFDelivered) {
     // Both CR and LF must arrive intact
     EXPECT_NE(rx.find('\r'), std::string::npos);
     EXPECT_NE(rx.find('\n'), std::string::npos);
+}
+
+// =============================================================================
+// ax25dump.hpp — hex_dump() and ctrl_detail()
+// =============================================================================
+
+// ── hex_dump ─────────────────────────────────────────────────────────────────
+
+TEST(HexDump, EmptyReturnsEmpty) {
+    EXPECT_EQ(hex_dump(nullptr, 0), "");
+    EXPECT_EQ(hex_dump(nullptr, 0, ">>"), "");
+}
+
+TEST(HexDump, SinglePrintableByte) {
+    uint8_t b = 0x41;  // 'A'
+    std::string out = hex_dump(&b, 1);
+    EXPECT_NE(out.find("00000000"), std::string::npos) << "offset missing";
+    EXPECT_NE(out.find("41"),       std::string::npos) << "hex byte missing";
+    EXPECT_NE(out.find("|A|"),      std::string::npos) << "ASCII column missing";
+    EXPECT_EQ(std::count(out.begin(), out.end(), '\n'), 1) << "must be one line";
+}
+
+TEST(HexDump, SingleNonPrintableByteShownAsDot) {
+    uint8_t b = 0x01;
+    std::string out = hex_dump(&b, 1);
+    EXPECT_NE(out.find("01"), std::string::npos);
+    EXPECT_NE(out.find("|.|"), std::string::npos) << "non-printable must be '.'";
+}
+
+TEST(HexDump, Exactly16BytesIsOneLine) {
+    uint8_t data[16];
+    for (int i = 0; i < 16; i++) data[i] = (uint8_t)('A' + i);
+    std::string out = hex_dump(data, 16);
+    EXPECT_EQ(std::count(out.begin(), out.end(), '\n'), 1);
+    EXPECT_NE(out.find("00000000"), std::string::npos);
+    EXPECT_EQ(out.find("00000010"), std::string::npos) << "no second line offset";
+}
+
+TEST(HexDump, SeventeenBytesIsTwoLines) {
+    uint8_t data[17];
+    for (int i = 0; i < 17; i++) data[i] = (uint8_t)i;
+    std::string out = hex_dump(data, 17);
+    EXPECT_EQ(std::count(out.begin(), out.end(), '\n'), 2);
+    EXPECT_NE(out.find("00000000"), std::string::npos) << "first line offset";
+    EXPECT_NE(out.find("00000010"), std::string::npos) << "second line offset (16 = 0x10)";
+}
+
+TEST(HexDump, PrefixAppliedToEveryLine) {
+    uint8_t data[17];
+    for (int i = 0; i < 17; i++) data[i] = (uint8_t)i;
+    std::string out = hex_dump(data, 17, "   ");
+    // Every line must start with the prefix
+    size_t pos = 0;
+    int lines = 0;
+    while ((pos = out.find('\n', pos)) != std::string::npos) {
+        ++lines;
+        ++pos;
+    }
+    EXPECT_EQ(lines, 2);
+    // Find beginning of each line and verify prefix
+    EXPECT_EQ(out.substr(0, 3), "   ") << "first line prefix";
+    size_t nl = out.find('\n');
+    EXPECT_EQ(out.substr(nl + 1, 3), "   ") << "second line prefix";
+}
+
+TEST(HexDump, MixedPrintableAndNonPrintable) {
+    uint8_t data[] = {'H','e','l','l','o', 0x00, 0xFF};
+    std::string out = hex_dump(data, sizeof(data));
+    size_t bar = out.find('|');
+    ASSERT_NE(bar, std::string::npos);
+    std::string ascii_section = out.substr(bar);
+    EXPECT_NE(ascii_section.find("Hello.."), std::string::npos)
+        << "printable chars intact, non-printable as dot";
+}
+
+TEST(HexDump, TwoGroupsOfEightSeparatedByExtraSpace) {
+    // 16-byte line: "xx xx xx xx xx xx xx xx  xx xx xx xx xx xx xx xx"
+    //                 ^---- 8 bytes ----^  ^ extra space ^---- 8 bytes ----^
+    uint8_t data[16];
+    for (int i = 0; i < 16; i++) data[i] = (uint8_t)0xAA;
+    std::string out = hex_dump(data, 16);
+    // The pattern "aa aa " (8th byte space) followed by extra space then "aa"
+    // Full hex section: "aa aa aa aa aa aa aa aa  aa aa aa aa aa aa aa aa "
+    EXPECT_NE(out.find("aa aa aa aa aa aa aa aa  aa aa"), std::string::npos)
+        << "double space between byte groups 1 and 2";
+}
+
+// ── ctrl_detail ──────────────────────────────────────────────────────────────
+
+TEST(CtrlDetail, IFrameBasic) {
+    // ctrl=0x00: NS=0, NR=0, P/F=0
+    EXPECT_EQ(ctrl_detail(0x00, 10),
+              "ctrl=0x00  I     N(S)=0 N(R)=0 P/F=0  (10 bytes)");
+}
+
+TEST(CtrlDetail, IFrameWithSequenceNumbers) {
+    // ctrl=0x04: bit0=0 (I), NS=(4>>1)&7=2, NR=(4>>5)&7=0, P/F=0
+    EXPECT_EQ(ctrl_detail(0x04, 20),
+              "ctrl=0x04  I     N(S)=2 N(R)=0 P/F=0  (20 bytes)");
+}
+
+TEST(CtrlDetail, IFrameWithPF) {
+    // ctrl=0x14: NS=2, NR=0, P/F=1  (bit4 set)
+    EXPECT_EQ(ctrl_detail(0x14, 5),
+              "ctrl=0x14  I     N(S)=2 N(R)=0 P/F=1  (5 bytes)");
+}
+
+TEST(CtrlDetail, IFrameNRInUpperThreeBits) {
+    // ctrl=0xE0: bit0=0, NS=0, NR=(0xE0>>5)&7=7, P/F=0
+    EXPECT_EQ(ctrl_detail(0xE0, 1),
+              "ctrl=0xe0  I     N(S)=0 N(R)=7 P/F=0  (1 bytes)");
+}
+
+TEST(CtrlDetail, SFrameRR) {
+    // ctrl=0x61: (ctrl&0x03)=0x01 (S), (ctrl>>2)&3=0 → RR, NR=(0x61>>5)&7=3, P/F=0
+    EXPECT_EQ(ctrl_detail(0x61, 15),
+              "ctrl=0x61  S/RR  N(R)=3 P/F=0  (15 bytes)");
+}
+
+TEST(CtrlDetail, SFrameRNR) {
+    // ctrl=0x05: (ctrl&0x03)=0x01 (S), (ctrl>>2)&3=1 → RNR, NR=0, P/F=0
+    EXPECT_EQ(ctrl_detail(0x05, 8),
+              "ctrl=0x05  S/RNR  N(R)=0 P/F=0  (8 bytes)");
+}
+
+TEST(CtrlDetail, SFrameREJ) {
+    // ctrl=0x09: (ctrl>>2)&3=2 → REJ, NR=0, P/F=0
+    EXPECT_EQ(ctrl_detail(0x09, 8),
+              "ctrl=0x09  S/REJ  N(R)=0 P/F=0  (8 bytes)");
+}
+
+TEST(CtrlDetail, UFrameSABM) {
+    EXPECT_EQ(ctrl_detail(0x2F, 15),
+              "ctrl=0x2f  U/SABM  P/F=0  (15 bytes)");
+}
+
+TEST(CtrlDetail, UFrameSABMWithPF) {
+    // 0x3F = 0x2F | 0x10  (P/F bit set)
+    EXPECT_EQ(ctrl_detail(0x3F, 15),
+              "ctrl=0x3f  U/SABM  P/F=1  (15 bytes)");
+}
+
+TEST(CtrlDetail, UFrameUA) {
+    EXPECT_EQ(ctrl_detail(0x63, 15),
+              "ctrl=0x63  U/UA  P/F=0  (15 bytes)");
+}
+
+TEST(CtrlDetail, UFrameUAWithPF) {
+    EXPECT_EQ(ctrl_detail(0x73, 15),
+              "ctrl=0x73  U/UA  P/F=1  (15 bytes)");
+}
+
+TEST(CtrlDetail, UFrameDISC) {
+    EXPECT_EQ(ctrl_detail(0x43, 15),
+              "ctrl=0x43  U/DISC  P/F=0  (15 bytes)");
+}
+
+TEST(CtrlDetail, UFrameDM) {
+    EXPECT_EQ(ctrl_detail(0x0F, 15),
+              "ctrl=0x0f  U/DM  P/F=0  (15 bytes)");
+}
+
+TEST(CtrlDetail, UFrameUI) {
+    EXPECT_EQ(ctrl_detail(0x03, 10),
+              "ctrl=0x03  U/UI  P/F=0  (10 bytes)");
+}
+
+TEST(CtrlDetail, UFrameFRMR) {
+    EXPECT_EQ(ctrl_detail(0x87, 10),
+              "ctrl=0x87  U/FRMR  P/F=0  (10 bytes)");
+}
+
+TEST(CtrlDetail, UFrameUnknown) {
+    // 0xFF is not a known U-frame — should show U/U?
+    std::string out = ctrl_detail(0xFF, 5);
+    EXPECT_NE(out.find("U/U?"), std::string::npos) << "unknown U-frame type";
+    EXPECT_NE(out.find("(5 bytes)"), std::string::npos);
+}
+
+TEST(CtrlDetail, ByteCountInOutput) {
+    // The frame size should always appear at the end
+    EXPECT_NE(ctrl_detail(0x00,   1).find("(1 bytes)"),   std::string::npos);
+    EXPECT_NE(ctrl_detail(0x00, 256).find("(256 bytes)"), std::string::npos);
 }
 
 // Main — GoogleTest entry point

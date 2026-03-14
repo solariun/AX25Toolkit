@@ -1,17 +1,44 @@
 // ble_kiss_bridge.cpp — BLE KISS TNC serial bridge + AX.25 monitor (C++17)
 //
-// Requires: SimpleBLE  →  make ble-deps
+// Requires: SimpleBLE  →  make ble-deps  (builds vendor/simpleble via cmake)
 //
-// Modes:
+// ── Modes ─────────────────────────────────────────────────────────────────────
 //   --scan                       Scan for nearby BLE devices
-//   --inspect <ADDR>             List every service/characteristic
-//   --device  <ADDR>             PTY serial bridge with AX.25 frame monitor
+//   --inspect <ADDR>             List every GATT service/characteristic
+//   --device  <ADDR>             Bridge mode (PTY or TCP)
 //                  --service / --write / --read   GATT UUIDs
 //                  [--mtu <N>]                    Max chunk cap (default 517)
 //                  [--write-with-response]        Force write-with-response
+//                  [--monitor]                    Enable rich frame monitor
 //
-// Build:
-//   make ble-deps        # clone + build SimpleBLE into vendor/simpleble
+// ── Transport modes (mutually exclusive) ─────────────────────────────────────
+//   PTY  (default)  A virtual serial port is created.  Symlink → /tmp/kiss.
+//                   Connect: ax25client -c W1AW -r W1BBS-1 /tmp/kiss
+//   TCP             --server-port N  opens a KISS-over-TCP listener.
+//                   Connect: ax25client -c W1AW -r W1BBS-1 localhost:N
+//
+// ── Rich frame monitor (--monitor) ───────────────────────────────────────────
+//   Each AX.25 frame is shown as:
+//
+//     [HH:MM:SS.mmm]  <- BLE  W1AW -> W1BBS-1  [SABM]        ← normal
+//                ctrl=0x2f  U/SABM  P/F=1  (15 bytes)         ← dim
+//                00000000  c0 1e 9a 76 40 ...  |...v@...|      ← dim
+//
+//   Direction tags:
+//     "<- BLE"  BLE TNC  → PTY / TCP clients  (receive path)
+//     "-> PTY"  PTY       → BLE TNC           (transmit path, PTY mode)
+//     "-> TCP"  TCP client → BLE TNC           (transmit path, TCP mode)
+//
+//   KISS control frames (TXDELAY, P, SLOTTIME …) are shown in dim with a
+//   plain hexdump.  Fragmented packets are labelled "(buffering)" until a
+//   complete KISS frame is assembled.
+//
+//   The ctrl detail and hexdump-C output come from ax25dump.hpp, the same
+//   header used by ax25kiss and ax25client, keeping the format identical
+//   across all three tools.
+//
+// ── Build ─────────────────────────────────────────────────────────────────────
+//   make ble-deps        # build SimpleBLE (one-time, needs cmake)
 //   make ble_kiss_bridge
 
 #ifdef __APPLE__
@@ -1167,7 +1194,8 @@ static void usage(const char* prog) {
         "  --ble-ka <secs>        BLE keep-alive: send KISS null every N seconds\n"
         "                         when idle to prevent TNC inactivity disconnect\n"
         "                         Default: 5  (use 0 to disable)\n"
-        "  --monitor              Print per-frame hex + AX.25 decode to stdout\n\n"
+        "  --monitor              Rich frame monitor: hexdump-C + AX.25 ctrl decode\n"
+        "                         Same format as ax25kiss/ax25client (dim detail lines)\n\n"
         "Examples:\n"
         "  " << prog << " --scan --timeout 15\n"
         "  " << prog << " --inspect AA:BB:CC:DD:EE:FF\n"
