@@ -124,6 +124,10 @@ jobs:
 
   # ============================================================================
   # Linux ARMhf  (Raspberry Pi 32-bit, cross-compiled on ubuntu-latest)
+  #
+  # Ubuntu 24.04 Noble: armhf packages live on ports.ubuntu.com, not on
+  # security.ubuntu.com.  We restrict the existing sources to amd64/i386 and
+  # add a ports mirror entry for armhf before running apt-get update.
   # ============================================================================
   linux-armhf:
     name: Linux ARMhf (Raspberry Pi)
@@ -134,10 +138,43 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Configure APT for armhf cross-build
+        run: |
+          sudo dpkg --add-architecture armhf
+
+          # Restrict existing sources to amd64/i386 so apt does not attempt to
+          # fetch armhf package lists from security.ubuntu.com (404 on Noble).
+          sudo python3 - <<'PYEOF'
+import pathlib, re
+
+p = pathlib.Path('/etc/apt/sources.list.d/ubuntu.sources')
+if p.exists():
+    # DEB822 format used by Ubuntu 24.04
+    txt = p.read_text()
+    stanzas = re.split(r'\n{2,}', txt.strip())
+    out = []
+    for s in stanzas:
+        if s.strip() and 'Types: deb' in s and 'Architectures:' not in s:
+            s = s.rstrip() + '\nArchitectures: amd64 i386'
+        out.append(s)
+    p.write_text('\n\n'.join(out) + '\n')
+else:
+    # Legacy one-liner format (older Ubuntu runners)
+    src = pathlib.Path('/etc/apt/sources.list')
+    txt = src.read_text()
+    txt = re.sub(r'^deb (http)', r'deb [arch=amd64,i386] \1', txt, flags=re.MULTILINE)
+    src.write_text(txt)
+PYEOF
+
+          # Add ports.ubuntu.com as the armhf package source
+          printf '%s\n' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble           main restricted universe multiverse' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates   main restricted universe multiverse' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security  main restricted universe multiverse' \
+            | sudo tee /etc/apt/sources.list.d/armhf-ports.list > /dev/null
+
       - name: Install cross-compiler + deps
         run: |
-          sudo apt-get update -qq
-          sudo dpkg --add-architecture armhf
           sudo apt-get update -qq
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
@@ -145,15 +182,12 @@ jobs:
             libsqlite3-dev:armhf
 
       - name: Build core apps (cross)
-        env:
-          CXX: arm-linux-gnueabihf-g++
-          PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
         run: |
           make bbs ax25kiss ax25client \
             CXX=arm-linux-gnueabihf-g++ \
             PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
 
-      # Tests can't run cross-compiled binaries; skip.
+      # Tests cannot run cross-compiled binaries — skip.
 
       - name: Package
         run: |
@@ -203,7 +237,7 @@ jobs:
           cp README.md LICENSE "$PKG"/ 2>/dev/null || true
           tar czf "${PKG}.tar.gz" "$PKG"
 
-      # Upload individual binaries too — needed by the universal step.
+      # Upload individual binaries — needed by the universal step.
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64-bins
@@ -221,11 +255,20 @@ jobs:
           retention-days: 7
 
   # ============================================================================
-  # macOS x86_64  (Intel, macos-13)
+  # macOS Universal  (arm64 native + x86_64 cross-compiled via -arch x86_64)
+  #
+  # The macos-13 (Intel) GitHub-hosted runner is no longer reliably available.
+  # We cross-compile for x86_64 on the Apple Silicon runner instead:
+  #   • AppleClang supports -arch x86_64 natively on arm64 hosts.
+  #   • The macOS system libsqlite3 is a universal dylib — safe to link from
+  #     either arch without pointing at the brew arm64-only copy.
+  #   • SimpleBLE is rebuilt for x86_64 via -DCMAKE_OSX_ARCHITECTURES=x86_64
+  #     (best-effort; ble_kiss_bridge falls back to arm64-only if it fails).
   # ============================================================================
-  macos-x86_64:
-    name: macOS x86_64
-    runs-on: macos-13
+  macos-universal:
+    name: macOS Universal
+    runs-on: macos-latest
+    needs: [macos-arm64]
 
     steps:
       - uses: actions/checkout@v4
@@ -235,76 +278,54 @@ jobs:
       - name: Install dependencies
         run: brew install googletest sqlite cmake
 
-      - name: Build core apps
-        run: make bbs ax25kiss ax25client
-
-      - name: Build ble_kiss_bridge
-        run: make ble_kiss_bridge
-
-      - name: Run tests
-        run: make test
-
-      - name: Package
-        run: |
-          REF="${{ github.ref_name || inputs.version }}"
-          PKG="ax25-${REF}-macos-x86_64"
-          mkdir -p "$PKG"
-          cp bbs ax25kiss ax25client ble_kiss_bridge "$PKG"/
-          cp README.md LICENSE "$PKG"/ 2>/dev/null || true
-          tar czf "${PKG}.tar.gz" "$PKG"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-x86_64-bins
-          path: |
-            bbs
-            ax25kiss
-            ax25client
-            ble_kiss_bridge
-          retention-days: 7
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-x86_64
-          path: ax25-*-macos-x86_64.tar.gz
-          retention-days: 7
-
-  # ============================================================================
-  # macOS Universal  (lipo arm64 + x86_64)
-  # ============================================================================
-  macos-universal:
-    name: macOS Universal
-    runs-on: macos-latest
-    needs: [ macos-arm64, macos-x86_64 ]
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
       - name: Download ARM64 binaries
         uses: actions/download-artifact@v4
         with:
           name: macos-arm64-bins
           path: bins/arm64
 
-      - name: Download x86_64 binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-x86_64-bins
-          path: bins/x86_64
+      - name: Build x86_64 core apps (cross on Apple Silicon)
+        run: |
+          # Use system libsqlite3 (universal dylib) instead of the brew arm64 lib.
+          make clean
+          make bbs ax25kiss ax25client \
+            CXXFLAGS="-std=c++11 -O2 -Wall -Wextra -Wpedantic -arch x86_64" \
+            SQLITE_FLAGS="-DHAVE_SQLITE3" \
+            SQLITE_LIBS="-lsqlite3"
+          mkdir -p bins/x86_64
+          cp bbs ax25kiss ax25client bins/x86_64/
+
+      - name: Build ble_kiss_bridge x86_64 (best-effort)
+        continue-on-error: true
+        run: |
+          cmake -S vendor/simpleble/simpleble \
+                -B vendor/simpleble/build-x86_64 \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DSIMPLEBLE_BUILD_SHARED_LIBS=OFF \
+                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+                -DCMAKE_OSX_ARCHITECTURES=x86_64
+          cmake --build vendor/simpleble/build-x86_64 \
+                --config Release -j$(sysctl -n hw.logicalcpu)
+          make ble_kiss_bridge \
+            CXX="clang++ -arch x86_64" \
+            BLE_LIB=vendor/simpleble/build-x86_64/lib/libsimpleble.a
+          cp ble_kiss_bridge bins/x86_64/
 
       - name: Create universal binaries with lipo
         run: |
           REF="${{ github.ref_name || inputs.version }}"
           PKG="ax25-${REF}-macos-universal"
           mkdir -p "$PKG"
-          chmod +x bins/arm64/* bins/x86_64/*
+          chmod +x bins/arm64/* bins/x86_64/* 2>/dev/null || true
           for BIN in bbs ax25kiss ax25client ble_kiss_bridge; do
-            if [ -f "bins/arm64/$BIN" ] && [ -f "bins/x86_64/$BIN" ]; then
-              lipo -create -output "$PKG/$BIN" \
-                "bins/arm64/$BIN" "bins/x86_64/$BIN"
+            ARM="bins/arm64/$BIN"
+            X86="bins/x86_64/$BIN"
+            if [ -f "$ARM" ] && [ -f "$X86" ]; then
+              lipo -create -output "$PKG/$BIN" "$ARM" "$X86"
               lipo -info "$PKG/$BIN"
+            elif [ -f "$ARM" ]; then
+              cp "$ARM" "$PKG/$BIN"
+              echo "$BIN: arm64 only (x86_64 cross-build skipped)"
             fi
           done
           cp README.md LICENSE "$PKG"/ 2>/dev/null || true
@@ -327,7 +348,6 @@ jobs:
       - linux-arm64
       - linux-armhf
       - macos-arm64
-      - macos-x86_64
       - macos-universal
     # Only publish a real release on tag pushes.
     # On workflow_dispatch the job still runs so you can inspect artifacts.
