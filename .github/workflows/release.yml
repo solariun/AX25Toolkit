@@ -126,8 +126,8 @@ jobs:
   # Linux ARMhf  (Raspberry Pi 32-bit, cross-compiled on ubuntu-latest)
   #
   # Ubuntu 24.04 Noble: armhf packages live on ports.ubuntu.com, not on
-  # security.ubuntu.com.  We restrict the existing sources to amd64/i386 and
-  # add a ports mirror entry for armhf before running apt-get update.
+  # security.ubuntu.com (returns 404).  We restrict the existing sources to
+  # amd64/i386 with sed, then add a ports.ubuntu.com entry for armhf.
   # ============================================================================
   linux-armhf:
     name: Linux ARMhf (Raspberry Pi)
@@ -138,43 +138,29 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Configure APT for armhf cross-build
+      - name: Install cross-compiler + deps
         run: |
           sudo dpkg --add-architecture armhf
 
-          # Restrict existing sources to amd64/i386 so apt does not attempt to
-          # fetch armhf package lists from security.ubuntu.com (404 on Noble).
-          sudo python3 - <<'PYEOF'
-import pathlib, re
+          # Ubuntu 24.04 uses DEB822 format (ubuntu.sources).
+          # Append "Architectures: amd64 i386" after every "Types: deb" line
+          # so apt stops trying to fetch armhf from security.ubuntu.com.
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            grep -q '^Architectures:' /etc/apt/sources.list.d/ubuntu.sources || \
+              sudo sed -i '/^Types: deb/a Architectures: amd64 i386' \
+                  /etc/apt/sources.list.d/ubuntu.sources
+          else
+            sudo sed -i 's/^deb \(http\)/deb [arch=amd64,i386] \1/' \
+                /etc/apt/sources.list 2>/dev/null || true
+          fi
 
-p = pathlib.Path('/etc/apt/sources.list.d/ubuntu.sources')
-if p.exists():
-    # DEB822 format used by Ubuntu 24.04
-    txt = p.read_text()
-    stanzas = re.split(r'\n{2,}', txt.strip())
-    out = []
-    for s in stanzas:
-        if s.strip() and 'Types: deb' in s and 'Architectures:' not in s:
-            s = s.rstrip() + '\nArchitectures: amd64 i386'
-        out.append(s)
-    p.write_text('\n\n'.join(out) + '\n')
-else:
-    # Legacy one-liner format (older Ubuntu runners)
-    src = pathlib.Path('/etc/apt/sources.list')
-    txt = src.read_text()
-    txt = re.sub(r'^deb (http)', r'deb [arch=amd64,i386] \1', txt, flags=re.MULTILINE)
-    src.write_text(txt)
-PYEOF
-
-          # Add ports.ubuntu.com as the armhf package source
+          # Add ports.ubuntu.com as the armhf package source.
           printf '%s\n' \
             'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble           main restricted universe multiverse' \
             'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates   main restricted universe multiverse' \
             'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security  main restricted universe multiverse' \
             | sudo tee /etc/apt/sources.list.d/armhf-ports.list > /dev/null
 
-      - name: Install cross-compiler + deps
-        run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
@@ -237,7 +223,7 @@ PYEOF
           cp README.md LICENSE "$PKG"/ 2>/dev/null || true
           tar czf "${PKG}.tar.gz" "$PKG"
 
-      # Upload individual binaries — needed by the universal step.
+      # Upload individual binaries too — needed by the universal step.
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64-bins
@@ -258,10 +244,10 @@ PYEOF
   # macOS Universal  (arm64 native + x86_64 cross-compiled via -arch x86_64)
   #
   # The macos-13 (Intel) GitHub-hosted runner is no longer reliably available.
-  # We cross-compile for x86_64 on the Apple Silicon runner instead:
+  # We cross-compile x86_64 on the Apple Silicon runner instead:
   #   • AppleClang supports -arch x86_64 natively on arm64 hosts.
   #   • The macOS system libsqlite3 is a universal dylib — safe to link from
-  #     either arch without pointing at the brew arm64-only copy.
+  #     either arch without the brew arm64-only copy.
   #   • SimpleBLE is rebuilt for x86_64 via -DCMAKE_OSX_ARCHITECTURES=x86_64
   #     (best-effort; ble_kiss_bridge falls back to arm64-only if it fails).
   # ============================================================================
@@ -286,7 +272,8 @@ PYEOF
 
       - name: Build x86_64 core apps (cross on Apple Silicon)
         run: |
-          # Use system libsqlite3 (universal dylib) instead of the brew arm64 lib.
+          # Use the macOS system libsqlite3 (universal dylib) instead of the
+          # brew arm64-only build so the cross-compile link succeeds.
           make clean
           make bbs ax25kiss ax25client \
             CXXFLAGS="-std=c++11 -O2 -Wall -Wextra -Wpedantic -arch x86_64" \
