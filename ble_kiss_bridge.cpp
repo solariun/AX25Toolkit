@@ -663,9 +663,10 @@ static void do_inspect(const std::string& address) {
 struct BridgeConfig {
     std::string address, service_uuid, write_uuid, read_uuid;
     std::string link_path = "/tmp/kiss"; // symlink → PTY slave (empty = no link)
-    int    mtu     = 517;
-    double timeout = 10.0;
-    bool   monitor = false;             // print per-frame hex + AX.25 decode
+    int    mtu       = 517;
+    double timeout   = 10.0;
+    int    ble_ka_ms = 5000;            // BLE keep-alive interval ms (0=off)
+    bool   monitor   = false;           // print per-frame hex + AX.25 decode
     std::optional<bool> force_response; // nullopt = auto-detect
 };
 
@@ -743,6 +744,8 @@ static void do_bridge(const BridgeConfig& cfg) {
               << "  chunk=" << chunk_size << "b"
               << "  wwr=" << (can_wwr ? "yes" : "no")
               << "  response=" << (use_response ? "yes" : "no") << "\n";
+    if (cfg.ble_ka_ms > 0)
+        std::cout << "  BLE keep-alive: " << cfg.ble_ka_ms / 1000 << "s  (KISS null writes)\n";
     std::cout << (cfg.monitor ? "  Monitor on.  Ctrl-C to stop.\n"
                               : "  Running.     Ctrl-C to stop.\n");
     std::cout << "\n";
@@ -806,14 +809,53 @@ static void do_bridge(const BridgeConfig& cfg) {
     signal(SIGINT,  sigint_handler);
     signal(SIGTERM, sigint_handler);
 
+    using SteadyClock = std::chrono::steady_clock;
+    auto last_ble_write = SteadyClock::now();
+
+    // Helper: write chunks to BLE; updates last_ble_write on success
+    auto ble_write = [&](const uint8_t* data, int len) {
+        for (int i = 0; i < len; i += chunk_size) {
+            int clen = std::min(chunk_size, len - i);
+            SimpleBLE::ByteArray chunk(data + i, data + i + clen);
+            if (use_response)
+                peripheral.write_request(cfg.service_uuid, cfg.write_uuid, chunk);
+            else
+                peripheral.write_command(cfg.service_uuid, cfg.write_uuid, chunk);
+        }
+        last_ble_write = SteadyClock::now();
+    };
+
     while (g_running && peripheral.is_connected()) {
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(master_fd, &rfds);
         struct timeval tv{0, 100000};  // 100 ms
 
-        if (select(master_fd + 1, &rfds, nullptr, nullptr, &tv) <= 0)
-            continue;
+        bool got_data = select(master_fd + 1, &rfds, nullptr, nullptr, &tv) > 0;
+
+        // ── BLE keep-alive: send KISS null (0xC0 0xC0) when idle ─────────
+        // Two consecutive FEND bytes are a valid KISS no-op: every KISS
+        // decoder discards the resulting empty frame, so the TNC's AX.25
+        // stack is unaffected — but the BLE write resets the TNC's own
+        // inactivity timer, preventing it from dropping the link.
+        if (cfg.ble_ka_ms > 0) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               SteadyClock::now() - last_ble_write).count();
+            if (elapsed >= cfg.ble_ka_ms) {
+                try {
+                    static const uint8_t kiss_null[] = {0xC0, 0xC0};
+                    ble_write(kiss_null, 2);
+                    if (cfg.monitor) {
+                        std::lock_guard<std::mutex> lk(mx);
+                        std::cout << "\n" << hr() << "\n";
+                        std::cout << "[" << ts() << "]  BLE keep-alive  (KISS null)\n";
+                        std::cout.flush();
+                    }
+                } catch (...) {}
+            }
+        }
+
+        if (!got_data) continue;
 
         uint8_t buf[4096];
         ssize_t nr = read(master_fd, buf, sizeof(buf));
@@ -828,16 +870,8 @@ static void do_bridge(const BridgeConfig& cfg) {
             std::cout.flush();
         }
 
-        // Chunk and write to BLE
         try {
-            for (int i = 0; i < (int)nr; i += chunk_size) {
-                int len = std::min(chunk_size, (int)nr - i);
-                SimpleBLE::ByteArray chunk(buf + i, buf + i + len);
-                if (use_response)
-                    peripheral.write_request(cfg.service_uuid, cfg.write_uuid, chunk);
-                else
-                    peripheral.write_command(cfg.service_uuid, cfg.write_uuid, chunk);
-            }
+            ble_write(buf, (int)nr);
         } catch (const std::exception& e) {
             std::lock_guard<std::mutex> lk(mx);
             std::cout << "  BLE write error: " << e.what() << "\n";
@@ -874,6 +908,9 @@ static void usage(const char* prog) {
         "Options (device mode):\n"
         "  --link <path>          Symlink created pointing to the PTY slave\n"
         "                         Default: /tmp/kiss  (use --link '' to disable)\n"
+        "  --ble-ka <secs>        BLE keep-alive: send KISS null every N seconds\n"
+        "                         when idle to prevent TNC inactivity disconnect\n"
+        "                         Default: 5  (use 0 to disable)\n"
         "  --monitor              Print per-frame hex + AX.25 decode to stdout\n"
         "                         (silent by default — only connection info shown)\n\n"
         "Examples:\n"
@@ -904,6 +941,7 @@ int main(int argc, char* argv[]) {
         else if (a == "--read"              && i+1 < argc) { cfg.read_uuid    = argv[++i]; }
         else if (a == "--mtu"               && i+1 < argc) { cfg.mtu          = std::stoi(argv[++i]); }
         else if (a == "--timeout"           && i+1 < argc) { timeout          = std::stod(argv[++i]); }
+        else if (a == "--ble-ka"            && i+1 < argc) { cfg.ble_ka_ms    = (int)(std::stod(argv[++i]) * 1000); }
         else if (a == "--write-with-response")             { cfg.force_response = true; }
         else if (a == "--monitor")                         { cfg.monitor        = true; }
         else if (a == "--link"              && i+1 < argc) { cfg.link_path      = argv[++i]; }
