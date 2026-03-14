@@ -1,0 +1,368 @@
+name: Release
+
+# Triggers:
+#   • Push a version tag:  git tag v1.2.3 && git push origin v1.2.3
+#   • Manual run from the Actions UI (workflow_dispatch)
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version label (e.g. v1.2.3) — used only for manual runs'
+        required: false
+        default: 'dev'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+# REF_NAME resolves to the tag (v1.2.3) or the manual version input.
+# Each platform job builds the core apps, optionally ble_kiss_bridge, then
+# uploads a .tar.gz artifact.  The final "release" job collects everything and
+# publishes the GitHub Release.
+
+jobs:
+  # ============================================================================
+  # Linux x86_64  (native, ubuntu-latest)
+  # ============================================================================
+  linux-x86_64:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libsqlite3-dev pkg-config cmake \
+                                  libdbus-1-dev libgtest-dev
+          GTEST_SRC=$(ls -d /usr/src/googletest /usr/src/gtest 2>/dev/null | head -1)
+          cd "$GTEST_SRC"
+          sudo cmake -B build -DCMAKE_BUILD_TYPE=Release
+          sudo cmake --build build
+          sudo find build -name 'libgtest*.a' -exec cp {} /usr/lib/ \;
+
+      - name: Build core apps
+        run: make bbs ax25kiss ax25client
+
+      - name: Build ble_kiss_bridge
+        continue-on-error: true
+        run: make ble_kiss_bridge
+
+      - name: Run tests
+        run: make test
+
+      - name: Package
+        run: |
+          REF="${{ github.ref_name || inputs.version }}"
+          PKG="ax25-${REF}-linux-x86_64"
+          mkdir -p "$PKG"
+          cp bbs ax25kiss ax25client "$PKG"/
+          [ -f ble_kiss_bridge ] && cp ble_kiss_bridge "$PKG"/ || true
+          cp README.md LICENSE "$PKG"/ 2>/dev/null || true
+          tar czf "${PKG}.tar.gz" "$PKG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: ax25-*-linux-x86_64.tar.gz
+          retention-days: 7
+
+  # ============================================================================
+  # Linux ARM64  (native, ubuntu-24.04-arm)
+  # ============================================================================
+  linux-arm64:
+    name: Linux ARM64
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libsqlite3-dev pkg-config cmake \
+                                  libdbus-1-dev libgtest-dev
+          GTEST_SRC=$(ls -d /usr/src/googletest /usr/src/gtest 2>/dev/null | head -1)
+          cd "$GTEST_SRC"
+          sudo cmake -B build -DCMAKE_BUILD_TYPE=Release
+          sudo cmake --build build
+          sudo find build -name 'libgtest*.a' -exec cp {} /usr/lib/ \;
+
+      - name: Build core apps
+        run: make bbs ax25kiss ax25client
+
+      - name: Build ble_kiss_bridge
+        continue-on-error: true
+        run: make ble_kiss_bridge
+
+      - name: Run tests
+        run: make test
+
+      - name: Package
+        run: |
+          REF="${{ github.ref_name || inputs.version }}"
+          PKG="ax25-${REF}-linux-arm64"
+          mkdir -p "$PKG"
+          cp bbs ax25kiss ax25client "$PKG"/
+          [ -f ble_kiss_bridge ] && cp ble_kiss_bridge "$PKG"/ || true
+          cp README.md LICENSE "$PKG"/ 2>/dev/null || true
+          tar czf "${PKG}.tar.gz" "$PKG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: ax25-*-linux-arm64.tar.gz
+          retention-days: 7
+
+  # ============================================================================
+  # Linux ARMhf  (Raspberry Pi 32-bit, cross-compiled on ubuntu-latest)
+  # ============================================================================
+  linux-armhf:
+    name: Linux ARMhf (Raspberry Pi)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compiler + deps
+        run: |
+          sudo apt-get update -qq
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            pkg-config cmake \
+            libsqlite3-dev:armhf
+
+      - name: Build core apps (cross)
+        env:
+          CXX: arm-linux-gnueabihf-g++
+          PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
+        run: |
+          make bbs ax25kiss ax25client \
+            CXX=arm-linux-gnueabihf-g++ \
+            PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
+
+      # Tests can't run cross-compiled binaries; skip.
+
+      - name: Package
+        run: |
+          REF="${{ github.ref_name || inputs.version }}"
+          PKG="ax25-${REF}-linux-armhf"
+          mkdir -p "$PKG"
+          cp bbs ax25kiss ax25client "$PKG"/
+          cp README.md LICENSE "$PKG"/ 2>/dev/null || true
+          tar czf "${PKG}.tar.gz" "$PKG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-armhf
+          path: ax25-*-linux-armhf.tar.gz
+          retention-days: 7
+
+  # ============================================================================
+  # macOS ARM64  (Apple Silicon, macos-latest)
+  # ============================================================================
+  macos-arm64:
+    name: macOS ARM64
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install googletest sqlite cmake
+
+      - name: Build core apps
+        run: make bbs ax25kiss ax25client
+
+      - name: Build ble_kiss_bridge
+        run: make ble_kiss_bridge
+
+      - name: Run tests
+        run: make test
+
+      - name: Package
+        run: |
+          REF="${{ github.ref_name || inputs.version }}"
+          PKG="ax25-${REF}-macos-arm64"
+          mkdir -p "$PKG"
+          cp bbs ax25kiss ax25client ble_kiss_bridge "$PKG"/
+          cp README.md LICENSE "$PKG"/ 2>/dev/null || true
+          tar czf "${PKG}.tar.gz" "$PKG"
+
+      # Upload individual binaries too — needed by the universal step.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-bins
+          path: |
+            bbs
+            ax25kiss
+            ax25client
+            ble_kiss_bridge
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: ax25-*-macos-arm64.tar.gz
+          retention-days: 7
+
+  # ============================================================================
+  # macOS x86_64  (Intel, macos-13)
+  # ============================================================================
+  macos-x86_64:
+    name: macOS x86_64
+    runs-on: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install googletest sqlite cmake
+
+      - name: Build core apps
+        run: make bbs ax25kiss ax25client
+
+      - name: Build ble_kiss_bridge
+        run: make ble_kiss_bridge
+
+      - name: Run tests
+        run: make test
+
+      - name: Package
+        run: |
+          REF="${{ github.ref_name || inputs.version }}"
+          PKG="ax25-${REF}-macos-x86_64"
+          mkdir -p "$PKG"
+          cp bbs ax25kiss ax25client ble_kiss_bridge "$PKG"/
+          cp README.md LICENSE "$PKG"/ 2>/dev/null || true
+          tar czf "${PKG}.tar.gz" "$PKG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64-bins
+          path: |
+            bbs
+            ax25kiss
+            ax25client
+            ble_kiss_bridge
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
+          path: ax25-*-macos-x86_64.tar.gz
+          retention-days: 7
+
+  # ============================================================================
+  # macOS Universal  (lipo arm64 + x86_64)
+  # ============================================================================
+  macos-universal:
+    name: macOS Universal
+    runs-on: macos-latest
+    needs: [ macos-arm64, macos-x86_64 ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ARM64 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-bins
+          path: bins/arm64
+
+      - name: Download x86_64 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-x86_64-bins
+          path: bins/x86_64
+
+      - name: Create universal binaries with lipo
+        run: |
+          REF="${{ github.ref_name || inputs.version }}"
+          PKG="ax25-${REF}-macos-universal"
+          mkdir -p "$PKG"
+          chmod +x bins/arm64/* bins/x86_64/*
+          for BIN in bbs ax25kiss ax25client ble_kiss_bridge; do
+            if [ -f "bins/arm64/$BIN" ] && [ -f "bins/x86_64/$BIN" ]; then
+              lipo -create -output "$PKG/$BIN" \
+                "bins/arm64/$BIN" "bins/x86_64/$BIN"
+              lipo -info "$PKG/$BIN"
+            fi
+          done
+          cp README.md LICENSE "$PKG"/ 2>/dev/null || true
+          tar czf "${PKG}.tar.gz" "$PKG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: ax25-*-macos-universal.tar.gz
+          retention-days: 7
+
+  # ============================================================================
+  # Publish GitHub Release
+  # ============================================================================
+  release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs:
+      - linux-x86_64
+      - linux-arm64
+      - linux-armhf
+      - macos-arm64
+      - macos-x86_64
+      - macos-universal
+    # Only publish a real release on tag pushes.
+    # On workflow_dispatch the job still runs so you can inspect artifacts.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'linux-*|macos-*[!-bins]'
+          path: dist
+          merge-multiple: true
+
+      - name: List packages
+        run: ls -lh dist/
+
+      - name: Compute checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "ax25 ${{ github.ref_name }}"
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # For manual runs: print artifact locations instead of publishing.
+      - name: Show artifact paths (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "### Release packages (workflow_dispatch — not published)" >> $GITHUB_STEP_SUMMARY
+          ls -lh dist/*.tar.gz | awk '{print "- "$NF" ("$5")"}' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**SHA256SUMS**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat dist/SHA256SUMS.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

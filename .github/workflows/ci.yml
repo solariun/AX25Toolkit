@@ -7,11 +7,17 @@ on:
     branches: [ main ]
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt-in to Node.js 24 runners
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # ── Core build + tests ─────────────────────────────────────────────────────
+  # Builds bbs / ax25kiss / ax25client and runs the full test suite.
+  # ble_kiss_bridge is excluded here because it requires SimpleBLE (cmake +
+  # libdbus-1-dev on Linux, CoreBluetooth on macOS) — those deps are handled
+  # in the separate "ble-bridge" job below.
   build-and-test:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -25,20 +31,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── Linux deps ─────────────────────────────────────────────────────────
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libgtest-dev libsqlite3-dev pkg-config cmake
-          # Build GoogleTest from source (Ubuntu ships headers only)
-          cd /usr/src/gtest && sudo cmake . && sudo make && sudo cp lib/*.a /usr/lib/
 
+          # Ubuntu ships GoogleTest as source-only; build and install the .a files.
+          GTEST_SRC=$(ls -d /usr/src/googletest /usr/src/gtest 2>/dev/null | head -1)
+          echo "Building GoogleTest from: $GTEST_SRC"
+          cd "$GTEST_SRC"
+          sudo cmake -B build -DCMAKE_BUILD_TYPE=Release
+          sudo cmake --build build
+          # Ubuntu 22.04+ puts libs under build/lib; older under build/
+          sudo find build -name 'libgtest*.a' -exec cp {} /usr/lib/ \;
+
+      # ── macOS deps ─────────────────────────────────────────────────────────
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install googletest sqlite
 
-      - name: Build all
-        run: make all
+      # ── Build core (no BLE) ────────────────────────────────────────────────
+      - name: Build core apps
+        run: make bbs ax25kiss ax25client
 
+      # ── Test suite ─────────────────────────────────────────────────────────
       - name: Run tests
         run: make test
+
+  # ── BLE bridge (macOS only, non-blocking) ─────────────────────────────────
+  # Verifies that ble_kiss_bridge still compiles. Runs on macOS because it has
+  # CoreBluetooth out of the box. Failures here are reported but do NOT block
+  # merges — BLE deps are heavier and more platform-specific.
+  build-ble-bridge:
+    name: BLE bridge (macOS, optional)
+    runs-on: macos-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cmake
+        run: brew install cmake
+
+      - name: Build SimpleBLE + ble_kiss_bridge
+        run: make ble_kiss_bridge
