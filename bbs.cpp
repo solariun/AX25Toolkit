@@ -173,7 +173,7 @@ struct Session {
     }
 
     void reply(const std::string& s) { if (conn && conn->connected()) conn->send(s); }
-    void println(const std::string& s) { reply(s + "\r\n"); }
+    void println(const std::string& s) { reply(s + "\r"); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

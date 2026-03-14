@@ -372,8 +372,10 @@ Connection::Connection(Router* router, ObjList<Connection>& lst,
     : ObjNode<Connection>(lst),         // ← auto-insert via ObjNode ctor
       router_(router),
       local_(local), remote_(remote),
-      cfg_(cfg), outgoing_(outgoing)
+      cfg_(cfg), outgoing_(outgoing),
+      srtt_ms_(cfg.t1_ms)              // initial adaptive T1 = configured value
 {
+    rttvar_ = cfg.t1_ms / 2;           // initial variance = half of T1
     (void)outgoing_;   // suppress unused-parameter warning
 }
 
@@ -450,14 +452,25 @@ void Connection::flush_window(Millis now) {
         tx_iframe(ns, vr_, false, chunk.data(), chunk.size());
     }
     if (!unacked_.empty() && !t1_run_) start_t1(now);
+    // Start RTT measurement on the first unacked frame
+    if (!unacked_.empty() && !rtt_active_) {
+        rtt_start_  = now;
+        rtt_active_ = true;
+    }
 }
 
 void Connection::process_nr(int nr, Millis now) {
     // Pop all frames acknowledged by peer (ns != nr means it's been acked)
+    bool any_acked = !unacked_.empty() && unacked_.front().ns != nr;
     while (!unacked_.empty() && unacked_.front().ns != nr)
         unacked_.pop_front();
     va_ = nr;
     retry_ = 0;
+    // Adaptive T1: complete RTT measurement when frames are newly acked
+    if (any_acked && rtt_active_) {
+        update_rtt(now - rtt_start_);
+        rtt_active_ = false;
+    }
     if (unacked_.empty()) stop_t1();
     else                  start_t1(now);
     flush_window(now);
@@ -466,6 +479,7 @@ void Connection::process_nr(int nr, Millis now) {
 
 void Connection::retransmit_all(Millis now) {
     // Go-Back-N: replay all unacked frames with current vr_
+    rtt_active_ = false;   // invalidate RTT measurement on retransmit
     vs_ = va_;
     std::deque<UnackedFrame> tmp;
     std::swap(tmp, unacked_);
@@ -474,13 +488,40 @@ void Connection::retransmit_all(Millis now) {
         unacked_.push_back({vs_, std::move(uf.data)});
         vs_ = (vs_ + 1) & 7;
     }
-    start_t1(now);
+    // Fill remaining window slots with new data from send_buf_
+    flush_window(now);
+    if (!unacked_.empty()) start_t1(now);
 }
 
 void Connection::link_failed() {
     stop_t1(); stop_t3();
     state_ = State::DISCONNECTED;
     if (on_disconnect) on_disconnect();
+}
+
+// Adaptive T1: Jacobson/Karels SRTT estimator (RFC 6298 simplified)
+// rtt = measured round-trip time in ms
+void Connection::update_rtt(Millis rtt) {
+    int r = (int)rtt;
+    if (srtt_ms_ == cfg_.t1_ms && rttvar_ == cfg_.t1_ms / 2) {
+        // First real measurement — initialize per RFC 6298
+        srtt_ms_ = r;
+        rttvar_  = r / 2;
+    } else {
+        // RTTVAR = (1-β) × RTTVAR + β × |SRTT - R|   (β = 1/4)
+        int delta = srtt_ms_ - r;
+        if (delta < 0) delta = -delta;
+        rttvar_ = (3 * rttvar_ + delta) / 4;
+        // SRTT  = (1-α) × SRTT + α × R               (α = 1/8)
+        srtt_ms_ = (7 * srtt_ms_ + r) / 8;
+    }
+    // T1 = SRTT + max(200, 4 × RTTVAR), clamped to [500, cfg_.t1_ms × 4]
+    int t1 = srtt_ms_ + std::max(200, 4 * rttvar_);
+    int lo = 500;                      // never go below 500 ms
+    int hi = cfg_.t1_ms * 4;           // never exceed 4× configured T1
+    if (t1 < lo) t1 = lo;
+    if (t1 > hi) t1 = hi;
+    srtt_ms_ = t1;
 }
 
 // =============================================================================
@@ -601,7 +642,20 @@ void Connection::handle_frame(const Frame& f, Millis now) {
             process_nr(f.get_nr(), now);
             // Peer busy; window management already handled
         } else if (t == Frame::Type::REJ) {
-            process_nr(f.get_nr(), now);
+            // Ack frames up to NR (like process_nr) but do NOT flush new
+            // frames — retransmit_all will replay unacked + flush in one pass.
+            {
+                bool any_acked = !unacked_.empty() && unacked_.front().ns != f.get_nr();
+                while (!unacked_.empty() && unacked_.front().ns != f.get_nr())
+                    unacked_.pop_front();
+                va_ = f.get_nr();
+                retry_ = 0;
+                if (any_acked && rtt_active_) {
+                    update_rtt(now - rtt_start_);
+                    rtt_active_ = false;
+                }
+                reset_t3(now);
+            }
             retransmit_all(now);
         }
         break;

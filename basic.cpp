@@ -1272,7 +1272,7 @@ int Basic::cmd_print(Lexer& lx, int) {
         out += v.to_str();
         first = false;
     }
-    send_line(out + "\r\n");
+    send_line(out + "\r");
     return -1;
 }
 

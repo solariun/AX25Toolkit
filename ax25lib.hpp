@@ -260,7 +260,7 @@ struct Config {
     int t2_ms   = 200;                // delayed-ack timer ms (not used in send path)
     int t3_ms   = 60000;              // keep-alive / inactivity timer ms
     int n2      = 10;                 // max retransmissions before link-fail
-    int txdelay = 30;                 // KISS TX delay (×10 ms units)
+    int txdelay = 40;                 // KISS TX delay (×10 ms units, default 400ms)
     int persist = 63;                 // KISS persistence (0-255)
 };
 
@@ -388,11 +388,12 @@ private:
     void link_failed();
 
     // Timer helpers
-    void start_t1(Millis now) { t1_exp_=now+cfg_.t1_ms; t1_run_=true; }
+    void start_t1(Millis now) { t1_exp_=now+srtt_ms_; t1_run_=true; }
     void stop_t1()            { t1_run_=false; }
     void start_t3(Millis now) { t3_exp_=now+cfg_.t3_ms; t3_run_=true; }
     void stop_t3()            { t3_run_=false; }
     void reset_t3(Millis now) { t3_exp_=now+cfg_.t3_ms; t3_run_=true; }
+    void update_rtt(Millis rtt);   // adaptive T1: SRTT estimator
 
     Router* router_;
     Addr    local_, remote_;
@@ -407,6 +408,12 @@ private:
     bool   t1_run_=false; Millis t1_exp_=0;
     bool   t3_run_=false; Millis t3_exp_=0;
     bool   poll_pending_=false;
+
+    // Adaptive T1 (Smoothed Round-Trip Time estimator)
+    int    srtt_ms_  = 0;         // current adaptive T1 value (0 = use cfg_.t1_ms)
+    int    rttvar_   = 0;         // RTT variance (scaled ×4)
+    Millis rtt_start_= 0;         // when the oldest unacked frame was sent
+    bool   rtt_active_= false;    // true when measuring a round-trip
 
     // Data queues
     std::deque<std::vector<uint8_t>> send_buf_;  // MTU-chunked, waiting to send

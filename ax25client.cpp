@@ -38,7 +38,7 @@
 //   -k T3_MS        T3 keep-alive timer ms (default: 60000)
 //   -n N2           Max retry count (default: 10)
 //   --mtu BYTES     I-frame MTU bytes (default: 128)
-//   --txdelay MS    KISS TX delay ms (default: 300)
+//   --txdelay MS    KISS TX delay ms (default: 400)
 //   --pid HEX       PID for UI frames in hex (default: F0)
 //   -s FILE         Run BASIC script after connect (connect mode only)
 //                   Pre-set vars: remote$, local$, callsign$
@@ -166,7 +166,7 @@ struct AppCfg {
     bool        tnc_mode = true;          // true when -m was NOT explicitly given
     bool        monitor  = false;         // extra monitor in connect/unproto
     uint8_t     pid      = 0xF0;          // UI frame PID
-    int         txdelay  = 300;           // KISS TX delay ms
+    int         txdelay  = 400;           // KISS TX delay ms
     Config      ax25;                     // ax25lib Config (mycall, mtu, etc.)
     int         baud     = 9600;
     std::string script;                   // path to BASIC script (-s); empty = interactive
@@ -233,7 +233,7 @@ static void print_usage(const char* prog) {
         << "  -k T3        T3 keep-alive timer ms (default: 60000)\n"
         << "  -n N2        Max retry count (default: 10)\n"
         << "  --mtu N      I-frame MTU bytes (default: 128)\n"
-        << "  --txdelay N  KISS TX delay ms (default: 300)\n"
+        << "  --txdelay N  KISS TX delay ms (default: 400)\n"
         << "  --pid HEX    PID for UI frames (default: F0)\n"
         << "  -s FILE      BASIC script to run after connect (connect mode only)\n"
         << "  --ka SECS    App-level keep-alive: send CR every N seconds when idle (default: 60, 0=off)\n"
@@ -1201,9 +1201,14 @@ static void run_basic_script(
         }
     };
 
-    interp.set_str("REMOTE$",   cfg.remote);
-    interp.set_str("LOCAL$",    cfg.ax25.mycall.str());
-    interp.set_str("CALLSIGN$", cfg.remote);
+    // Set all standard BBS-compatible variables so scripts work identically
+    // whether run from the BBS server or from ax25client
+    interp.set_str("REMOTE$",    cfg.remote);
+    interp.set_str("LOCAL$",     cfg.ax25.mycall.str());
+    interp.set_str("CALLSIGN$",  cfg.remote);
+    interp.set_str("BBS_NAME$",  cfg.ax25.mycall.str());   // use mycall as BBS name
+    interp.set_str("DB_PATH$",   "");                      // no database in client mode
+    interp.set_num("ARGC",       0);
 
     if (!interp.load_file(fname)) {
         std::cout << RED() << "[Error: cannot open script: " << fname << "]"

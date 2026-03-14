@@ -706,6 +706,7 @@ struct BridgeConfig {
     int    server_port      = 0;           // TCP server port (0 = disabled)
     std::string server_host;               // bind address (empty = all interfaces)
     bool   monitor          = false;       // print per-frame hex + AX.25 decode
+    bool   show_keepalive   = false;       // show BLE keep-alive in monitor output
     std::optional<bool> force_response;    // nullopt = auto-detect
 };
 
@@ -1025,7 +1026,7 @@ static void do_bridge(const BridgeConfig& cfg) {
                     try {
                         static const uint8_t kiss_null[] = {0xC0, 0xC0};
                         ble_write(kiss_null, 2);
-                        if (cfg.monitor) {
+                        if (cfg.monitor && cfg.show_keepalive) {
                             std::lock_guard<std::mutex> lk(mx);
                             std::cout << "\n" << hr() << "\n";
                             std::cout << "[" << ts() << "]  BLE keep-alive  (KISS null)\n";
@@ -1226,7 +1227,9 @@ static void usage(const char* prog) {
         "                         when idle to prevent TNC inactivity disconnect\n"
         "                         Default: 5  (use 0 to disable)\n"
         "  --monitor              Rich frame monitor: hexdump-C + AX.25 ctrl decode\n"
-        "                         Same format as ax25kiss/ax25client (dim detail lines)\n\n"
+        "                         Same format as ax25kiss/ax25client (dim detail lines)\n"
+        "  --show-keepalive       Show BLE keep-alive messages in monitor output\n"
+        "                         (hidden by default to reduce noise)\n\n"
         "Examples:\n"
         "  " << prog << " --scan --timeout 15\n"
         "  " << prog << " --inspect AA:BB:CC:DD:EE:FF\n"
@@ -1268,6 +1271,7 @@ int main(int argc, char* argv[]) {
         else if (a == "--server-host"       && i+1 < argc) { cfg.server_host  = argv[++i]; }
         else if (a == "--write-with-response")             { cfg.force_response = true; }
         else if (a == "--monitor")                         { cfg.monitor        = true; }
+        else if (a == "--show-keepalive")                   { cfg.show_keepalive = true; }
         else if (a == "--link"              && i+1 < argc) { cfg.link_path = argv[++i]; link_explicit = true; }
         else { std::cerr << "Unknown argument: " << a << "\n"; usage(argv[0]); return 1; }
     }
