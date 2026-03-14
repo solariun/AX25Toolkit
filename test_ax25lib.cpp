@@ -1800,6 +1800,206 @@ TEST(QBasicExt, ArrayFunctionReturn) {
 }
 
 // =============================================================================
+// Host-side MAP / QUEUE pre-population API
+//
+// Tests for the C++ methods:
+//   map_set(name, key, string)  map_set(name, key, double)  map_clear(name)
+//   queue_push(name, string)    queue_push(name, double)    queue_clear(name)
+//
+// All methods must be called AFTER load_string / load_file because those
+// functions call clear() which wipes maps_ and queues_.
+// =============================================================================
+
+// Helper: load a BASIC program, run a pre-population lambda, then run().
+static std::string run_basic_preload(const std::string& src,
+                                      std::function<void(Basic&)> preload) {
+    Basic interp;
+    std::string output;
+    interp.on_send = [&](const std::string& s) { output += s; };
+    interp.on_recv = [](int) -> std::string { return ""; };
+    interp.load_string(src);   // clear() happens here
+    if (preload) preload(interp); // inject data after clear
+    interp.run();
+    return output;
+}
+
+// ── MAP tests ────────────────────────────────────────────────────────────────
+
+TEST(HostMapQueue, MapSetStrReadBack) {
+    // Host injects a string value; script reads it via MAP_GET.
+    auto out = run_basic_preload(
+        "10 MAP_GET \"cfg\", \"host\", host$\n"
+        "20 PRINT host$",
+        [](Basic& b) { b.map_set("cfg", "host", "localhost"); });
+    EXPECT_NE(out.find("localhost"), std::string::npos);
+}
+
+TEST(HostMapQueue, MapSetNumReadBack) {
+    // Host injects a numeric value; script reads it via MAP_GET.
+    auto out = run_basic_preload(
+        "10 MAP_GET \"cfg\", \"port\", p$\n"
+        "20 PRINT p$",
+        [](Basic& b) { b.map_set("cfg", "port", 8080.0); });
+    EXPECT_NE(out.find("8080"), std::string::npos);
+}
+
+TEST(HostMapQueue, MapHasAfterHostSet) {
+    // MAP_HAS() returns 1 for an injected key, 0 for a missing key.
+    auto out = run_basic_preload(
+        "10 PRINT STR$(MAP_HAS(\"m\", \"k\"))\n"
+        "20 PRINT STR$(MAP_HAS(\"m\", \"missing\"))",
+        [](Basic& b) { b.map_set("m", "k", "v"); });
+    EXPECT_NE(out.find("1"), std::string::npos);
+    EXPECT_NE(out.find("0"), std::string::npos);
+}
+
+TEST(HostMapQueue, MapSizeAfterHostSet) {
+    // MAP_SIZE() reflects the number of host-injected entries.
+    auto out = run_basic_preload(
+        "10 PRINT STR$(MAP_SIZE(\"scores\"))",
+        [](Basic& b) {
+            b.map_set("scores", "W1ABC", 100.0);
+            b.map_set("scores", "W2XYZ", 200.0);
+            b.map_set("scores", "KD9FOO", 50.0);
+        });
+    EXPECT_NE(out.find("3"), std::string::npos);
+}
+
+TEST(HostMapQueue, MapOverwriteValue) {
+    // Calling map_set twice on the same key overwrites the value.
+    auto out = run_basic_preload(
+        "10 MAP_GET \"m\", \"x\", v$\n"
+        "20 PRINT v$",
+        [](Basic& b) {
+            b.map_set("m", "x", "first");
+            b.map_set("m", "x", "second");
+        });
+    EXPECT_NE(out.find("second"), std::string::npos);
+    EXPECT_EQ(out.find("first"),  std::string::npos);
+}
+
+TEST(HostMapQueue, MapClearHost) {
+    // map_clear() removes all entries; MAP_SIZE() should return 0.
+    auto out = run_basic_preload(
+        "10 PRINT STR$(MAP_SIZE(\"m\"))",
+        [](Basic& b) {
+            b.map_set("m", "a", "1");
+            b.map_set("m", "b", "2");
+            b.map_clear("m");
+        });
+    EXPECT_NE(out.find("0"), std::string::npos);
+}
+
+TEST(HostMapQueue, MapKeysAfterHostSet) {
+    // MAP_KEYS returns a comma-separated list of keys in sorted order.
+    auto out = run_basic_preload(
+        "10 MAP_KEYS \"m\", keys$\n"
+        "20 PRINT keys$",
+        [](Basic& b) {
+            b.map_set("m", "beta",  "2");
+            b.map_set("m", "alpha", "1");
+        });
+    // std::map keeps keys sorted; so "alpha" comes before "beta"
+    EXPECT_NE(out.find("alpha"), std::string::npos);
+    EXPECT_NE(out.find("beta"),  std::string::npos);
+    auto pos_a = out.find("alpha");
+    auto pos_b = out.find("beta");
+    EXPECT_LT(pos_a, pos_b);
+}
+
+TEST(HostMapQueue, MapMixedTypesInSameMap) {
+    // A single map can hold both string and numeric values (host-injected).
+    auto out = run_basic_preload(
+        "10 MAP_GET \"m\", \"name\", n$\n"
+        "20 MAP_GET \"m\", \"score\", s$\n"
+        "30 PRINT n$ + \"/\" + s$",
+        [](Basic& b) {
+            b.map_set("m", "name",  "Alice");
+            b.map_set("m", "score", 42.0);
+        });
+    EXPECT_NE(out.find("Alice"), std::string::npos);
+    EXPECT_NE(out.find("42"),    std::string::npos);
+}
+
+// ── QUEUE tests ───────────────────────────────────────────────────────────────
+
+TEST(HostMapQueue, QueuePushStrPopFIFO) {
+    // Host pushes two strings; script pops them in FIFO order.
+    auto out = run_basic_preload(
+        "10 QUEUE_POP \"q\", a$\n"
+        "20 QUEUE_POP \"q\", b$\n"
+        "30 PRINT a$ + \",\" + b$",
+        [](Basic& b) {
+            b.queue_push("q", "first");
+            b.queue_push("q", "second");
+        });
+    // a$ should be "first", b$ should be "second"
+    EXPECT_NE(out.find("first,second"), std::string::npos);
+}
+
+TEST(HostMapQueue, QueuePushNumPop) {
+    // Host pushes a numeric value; script pops and prints it.
+    auto out = run_basic_preload(
+        "10 QUEUE_POP \"q\", v$\n"
+        "20 PRINT v$",
+        [](Basic& b) { b.queue_push("q", 3.14); });
+    EXPECT_NE(out.find("3.14"), std::string::npos);
+}
+
+TEST(HostMapQueue, QueueSizeAfterHostPush) {
+    // QUEUE_SIZE() reflects the number of host-pushed elements.
+    auto out = run_basic_preload(
+        "10 PRINT STR$(QUEUE_SIZE(\"jobs\"))",
+        [](Basic& b) {
+            b.queue_push("jobs", "compile");
+            b.queue_push("jobs", "link");
+            b.queue_push("jobs", "test");
+        });
+    EXPECT_NE(out.find("3"), std::string::npos);
+}
+
+TEST(HostMapQueue, QueueEmptyAfterClear) {
+    // queue_clear() removes all elements; QUEUE_EMPTY() returns 1.
+    auto out = run_basic_preload(
+        "10 PRINT STR$(QUEUE_EMPTY(\"q\"))",
+        [](Basic& b) {
+            b.queue_push("q", "a");
+            b.queue_push("q", "b");
+            b.queue_clear("q");
+        });
+    EXPECT_NE(out.find("1"), std::string::npos);
+}
+
+TEST(HostMapQueue, QueueFIFOOrderMultiple) {
+    // Five items pushed in order must pop in the same order.
+    auto out = run_basic_preload(
+        "10 QUEUE_POP \"q\", a$\n"
+        "20 QUEUE_POP \"q\", b$\n"
+        "30 QUEUE_POP \"q\", c$\n"
+        "40 QUEUE_POP \"q\", d$\n"
+        "50 QUEUE_POP \"q\", e$\n"
+        "60 PRINT a$ + b$ + c$ + d$ + e$",
+        [](Basic& b) {
+            for (const char* s : {"A", "B", "C", "D", "E"})
+                b.queue_push("q", s);
+        });
+    EXPECT_NE(out.find("ABCDE"), std::string::npos);
+}
+
+TEST(HostMapQueue, MapAndQueueTogether) {
+    // A script that reads from both a host-injected map and a queue.
+    auto out = run_basic_preload(
+        "10 MAP_GET \"user\", \"name\", name$\n"
+        "20 QUEUE_POP \"msgs\", msg$\n"
+        "30 PRINT name$ + \": \" + msg$",
+        [](Basic& b) {
+            b.map_set("user", "name", "W1ABC");
+            b.queue_push("msgs", "Hello from host!");
+        });
+    EXPECT_NE(out.find("W1ABC: Hello from host!"), std::string::npos);
+}
+
+// =============================================================================
 // Line-terminator compatibility tests
 //
 // ax25client sends CR-only (\r) as the line terminator (packet radio

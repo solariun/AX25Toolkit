@@ -66,8 +66,27 @@ public:
                        const std::string& src)>          on_trace;
 
     // ── Pre-defined variables ─────────────────────────────────────────────
+    // name is uppercased internally to match the BASIC lexer.
     void set_str(const std::string& name, const std::string& val);
     void set_num(const std::string& name, double val);
+
+    // ── Host-side MAP pre-population (call after load_file / load_string) ─
+    // Injects entries into a named MAP the BASIC script can read with
+    // MAP_GET / MAP_HAS / MAP_KEYS / MAP_SIZE.
+    // map_name and key are stored as-is (string literals in scripts are not
+    // uppercased, only BASIC identifiers are).
+    void map_set(const std::string& map_name, const std::string& key,
+                 const std::string& val);
+    void map_set(const std::string& map_name, const std::string& key,
+                 double val);
+    void map_clear(const std::string& map_name);   // remove all entries
+
+    // ── Host-side QUEUE pre-population (call after load_file / load_string) ─
+    // Pushes values into a named FIFO the BASIC script can read with
+    // QUEUE_POP / QUEUE_PEEK / QUEUE_SIZE / QUEUE_EMPTY.
+    void queue_push(const std::string& queue_name, const std::string& val);
+    void queue_push(const std::string& queue_name, double val);
+    void queue_clear(const std::string& queue_name); // remove all elements
 
     // ── Program loading ───────────────────────────────────────────────────
     bool load_file(const std::string& path);       // load from file

@@ -6,7 +6,7 @@ A self-contained C++11 library implementing the AX.25 amateur-radio link-layer
 protocol over KISS-mode TNCs.  Includes a full-featured BBS with INI config,
 a QBASIC-style scripting engine (functions, structs, DO/LOOP, SELECT CASE, SQLite · TCP · HTTP),
 a complete TNC terminal client (`ax25client`), an offline BASIC debugger (`basic_tool`),
-remote shell access, an interactive KISS terminal, and a 156-test GoogleTest suite.
+remote shell access, an interactive KISS terminal, and a 170-test GoogleTest suite.
 
 ---
 
@@ -25,7 +25,7 @@ sudo apt-get install libgtest-dev libsqlite3-dev cmake libdbus-1-dev pkg-config
 
 # 3. Build core apps + run tests
 make          # builds: bbs  ax25kiss  ax25client  basic_tool  ble_kiss_bridge
-make test     # runs 156 tests — must all pass
+make test     # runs 170 tests — must all pass
 
 # 4. (Optional) BLE bridge — macOS & Linux with BlueZ
 make ble-deps          # compiles SimpleBLE once from vendor/simpleble
@@ -1066,6 +1066,93 @@ bbs.ini → welcome_script = welcome.bas
 > ```bash
 > basic_tool --trace -v callsign\$=W1ABC -v bbs_name\$=MyBBS welcome.bas
 > ```
+
+### Host-side MAP and QUEUE pre-population
+
+In addition to scalar variables (`set_str` / `set_num`), the host application
+can inject **MAP** entries and **QUEUE** elements before calling `run()`.
+This lets C++ code pass structured data — configuration tables, message queues,
+lookup tables — that BASIC scripts consume with `MAP_GET`, `QUEUE_POP`, etc.
+
+> **Important:** call all `map_set` / `queue_push` methods **after**
+> `load_file()` or `load_string()`, because both functions call `clear()`
+> internally which wipes `maps_` and `queues_`.
+
+#### API reference
+
+```cpp
+// ── MAP ──────────────────────────────────────────────────────────────────
+// Inject a string or numeric entry into a named MAP.
+// map_name and key are stored as-is (string literals, not BASIC identifiers,
+// so no uppercasing is needed).
+void map_set(const std::string& map_name, const std::string& key,
+             const std::string& val);   // string value
+void map_set(const std::string& map_name, const std::string& key,
+             double val);               // numeric value
+void map_clear(const std::string& map_name);  // remove all entries from map
+
+// ── QUEUE ─────────────────────────────────────────────────────────────────
+// Push one element onto the back of a named FIFO QUEUE.
+void queue_push(const std::string& queue_name, const std::string& val);
+void queue_push(const std::string& queue_name, double val);
+void queue_clear(const std::string& queue_name); // remove all elements
+```
+
+#### Example: inject a configuration MAP
+
+```cpp
+Basic interp;
+interp.on_send = [](const std::string& s){ std::cout << s; };
+interp.load_file("service.bas");
+
+// Inject config table — scripts read with MAP_GET "config", "key", var$
+interp.map_set("config", "host",    "db.example.com");
+interp.map_set("config", "port",    5432.0);
+interp.map_set("config", "db_name", "bbs");
+
+interp.run();
+```
+
+```basic
+' service.bas
+MAP_GET "config", "host", host$
+MAP_GET "config", "port", port$
+PRINT "Connecting to " + host$ + ":" + port$
+```
+
+#### Example: inject a message QUEUE
+
+```cpp
+interp.load_file("worker.bas");
+
+// Pre-load jobs — worker pops them one by one
+interp.queue_push("jobs", "compile");
+interp.queue_push("jobs", "link");
+interp.queue_push("jobs", "test");
+
+interp.run();
+```
+
+```basic
+' worker.bas
+DO WHILE QUEUE_SIZE("jobs") > 0
+    QUEUE_POP "jobs", job$
+    PRINT "Running: " + job$
+LOOP
+```
+
+#### Multiple maps and queues
+
+A single `Basic` instance can hold any number of named MAPs and QUEUEs.
+Names are arbitrary strings — they are not BASIC identifiers, so any
+characters are valid:
+
+```cpp
+interp.map_set("user:profile",  "callsign", "W1ABC");
+interp.map_set("user:profile",  "grid",     "FN42");
+interp.map_set("system:limits", "max_msgs", 100.0);
+interp.queue_push("rx:frames",  raw_frame_hex);
+```
 
 ### Language quick reference
 
@@ -2684,7 +2771,11 @@ hello
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--trace` | `-t` | Print `>> linenum: source` to stderr before each executed line |
-| `--var NAME=VAL` | `-v` | Pre-set a variable (`$` suffix → string; otherwise numeric) |
+| `--var NAME=VAL` | `-v` | Pre-set a scalar variable (`$` suffix → string; otherwise numeric) |
+| `--map NAME:KEY=VAL` | | Inject a **string** entry into a named MAP |
+| `--mapn NAME:KEY=NUM` | | Inject a **numeric** entry into a named MAP |
+| `--queue NAME:VAL` | | Push a **string** value onto a named QUEUE |
+| `--queuen NAME:NUM` | | Push a **numeric** value onto a named QUEUE |
 | `--repl` | `-r` | Open REPL after running a file |
 | `--no-color` | | Disable ANSI colour output |
 | `--help` | `-h` | Print usage |
@@ -2718,6 +2809,44 @@ basic_tool \
 
 Variable names are case-insensitive (`callsign$`, `CALLSIGN$`, `Callsign$` are
 all equivalent — the interpreter uppercases all identifiers internally).
+
+### Pre-populating MAPs and QUEUEs (`--map`, `--mapn`, `--queue`, `--queuen`)
+
+Use these flags to inject structured data that the script reads with
+`MAP_GET` / `MAP_HAS` / `QUEUE_POP` / `QUEUE_SIZE`, etc.
+Multiple flags of the same type are cumulative and applied in order.
+
+**Format:**
+- `--map  mapname:key=value` — add a **string** entry (`value` as-is)
+- `--mapn mapname:key=number` — add a **numeric** entry (parsed as `double`)
+- `--queue  queuename:value` — push a **string** onto the FIFO
+- `--queuen queuename:number` — push a **numeric** value onto the FIFO
+
+```bash
+# Inject a config map + job queue into a script
+basic_tool \
+  --map  config:host=db.example.com  \
+  --mapn config:port=5432            \
+  --map  config:db_name=bbs          \
+  --queue jobs:compile               \
+  --queue jobs:link                  \
+  --queue jobs:test                  \
+  worker.bas
+```
+
+The script can then read the data without any BASIC-side initialisation:
+
+```basic
+' worker.bas
+MAP_GET "config", "host", h$
+MAP_GET "config", "port", p$
+PRINT "DB: " + h$ + ":" + p$
+
+DO WHILE QUEUE_SIZE("jobs") > 0
+    QUEUE_POP "jobs", job$
+    PRINT "Running: " + job$
+LOOP
+```
 
 ### Trace output format
 

@@ -122,6 +122,92 @@ static void apply_vars(Basic& b, const std::vector<VarSpec>& vars) {
 }
 
 // =============================================================================
+// MAP / QUEUE injection specs
+//
+// --map  "mapname:key=value"   inject a string entry into a named MAP
+// --mapn "mapname:key=3.14"    inject a numeric entry into a named MAP
+// --queue  "queuename:value"   push a string onto a named QUEUE
+// --queuen "queuename:3.14"    push a numeric value onto a named QUEUE
+//
+// Format rules:
+//   MAP:   everything before the first ':' is map_name,
+//          everything between ':' and first '=' is key,
+//          everything after '=' is the value.
+//   QUEUE: everything before the first ':' is queue_name,
+//          everything after ':' is the value.
+// =============================================================================
+struct MapSpec {
+    std::string map_name;
+    std::string key;
+    std::string value;
+    bool        numeric;
+};
+
+struct QueueSpec {
+    std::string queue_name;
+    std::string value;
+    bool        numeric;
+};
+
+static MapSpec parse_map_spec(const std::string& s, bool numeric) {
+    MapSpec m;
+    m.numeric = numeric;
+    auto colon = s.find(':');
+    if (colon == std::string::npos) {
+        std::cerr << "bad --map spec (missing ':'): " << s
+                  << "  expected:  mapname:key=value\n";
+        std::exit(1);
+    }
+    m.map_name = s.substr(0, colon);
+    std::string rest = s.substr(colon + 1);
+    auto eq = rest.find('=');
+    if (eq == std::string::npos) {
+        std::cerr << "bad --map spec (missing '=' after key): " << s
+                  << "  expected:  mapname:key=value\n";
+        std::exit(1);
+    }
+    m.key   = rest.substr(0, eq);
+    m.value = rest.substr(eq + 1);
+    return m;
+}
+
+static QueueSpec parse_queue_spec(const std::string& s, bool numeric) {
+    QueueSpec q;
+    q.numeric = numeric;
+    auto colon = s.find(':');
+    if (colon == std::string::npos) {
+        std::cerr << "bad --queue spec (missing ':'): " << s
+                  << "  expected:  queuename:value\n";
+        std::exit(1);
+    }
+    q.queue_name = s.substr(0, colon);
+    q.value      = s.substr(colon + 1);
+    return q;
+}
+
+static void apply_maps(Basic& b, const std::vector<MapSpec>& maps) {
+    for (const auto& m : maps) {
+        if (m.numeric) {
+            try { b.map_set(m.map_name, m.key, std::stod(m.value)); }
+            catch (...) { b.map_set(m.map_name, m.key, m.value); }
+        } else {
+            b.map_set(m.map_name, m.key, m.value);
+        }
+    }
+}
+
+static void apply_queues(Basic& b, const std::vector<QueueSpec>& queues) {
+    for (const auto& q : queues) {
+        if (q.numeric) {
+            try { b.queue_push(q.queue_name, std::stod(q.value)); }
+            catch (...) { b.queue_push(q.queue_name, q.value); }
+        } else {
+            b.queue_push(q.queue_name, q.value);
+        }
+    }
+}
+
+// =============================================================================
 // Configure and run a Basic instance — shared between run-mode and REPL RUN
 // =============================================================================
 static void configure_interp(Basic& b, bool trace) {
@@ -289,7 +375,10 @@ static void repl_help() {
 // =============================================================================
 // Interactive REPL
 // =============================================================================
-static void repl(const std::vector<VarSpec>& vars, bool trace,
+static void repl(const std::vector<VarSpec>&   vars,
+                 const std::vector<MapSpec>&    maps,
+                 const std::vector<QueueSpec>&  queues,
+                 bool trace,
                  ReplProgram* preloaded = nullptr) {
     ReplProgram prog;
     if (preloaded) prog = *preloaded;
@@ -404,7 +493,9 @@ static void repl(const std::vector<VarSpec>& vars, bool trace,
             Basic b;
             g_interp = &b;
             prog.load_into(b);      // calls b.clear() internally
-            apply_vars(b, vars);    // apply after clear so vars survive
+            apply_vars(b, vars);    // apply after clear so data survives
+            apply_maps(b, maps);
+            apply_queues(b, queues);
             configure_interp(b, trace);
 
             bool ok = b.run();
@@ -423,8 +514,10 @@ static void repl(const std::vector<VarSpec>& vars, bool trace,
         {
             Basic b;
             g_interp = &b;
-            apply_vars(b, vars);
             b.add_line(10, line);
+            apply_vars(b, vars);     // add_line does not call clear(), so
+            apply_maps(b, maps);     // order doesn't matter here — but keep
+            apply_queues(b, queues); // consistent: inject after loading.
             configure_interp(b, trace);
             b.run();
             g_interp = nullptr;
@@ -444,11 +537,15 @@ static void usage(const char* prog) {
         "  " << prog << " [options]              interactive QBASIC REPL\n"
         "\n"
         "Options:\n"
-        "  -t, --trace          Print each executed line to stderr\n"
-        "  -v, --var NAME=VAL   Pre-set a variable ($ suffix → string; else numeric)\n"
-        "  -r, --repl           Open REPL after running a file\n"
-        "  --no-color           Disable ANSI colour output\n"
-        "  -h, --help           Show this help\n"
+        "  -t, --trace            Print each executed line to stderr\n"
+        "  -v, --var NAME=VAL     Pre-set a variable ($ suffix → string; else numeric)\n"
+        "  --map  NAME:KEY=VAL    Inject a string entry into a MAP\n"
+        "  --mapn NAME:KEY=NUM    Inject a numeric entry into a MAP\n"
+        "  --queue  NAME:VAL      Push a string onto a QUEUE\n"
+        "  --queuen NAME:NUM      Push a numeric value onto a QUEUE\n"
+        "  -r, --repl             Open REPL after running a file\n"
+        "  --no-color             Disable ANSI colour output\n"
+        "  -h, --help             Show this help\n"
         "\n"
         "REPL commands:\n"
         "  <linenum> <stmt>     Add/replace stored line\n"
@@ -459,6 +556,8 @@ static void usage(const char* prog) {
         "Examples:\n"
         "  " << prog << " welcome.bas\n"
         "  " << prog << " --trace -v callsign\\$=W1ABC -v bbs_name\\$=MyBBS welcome.bas\n"
+        "  " << prog << " --map cfg:host=localhost --map cfg:port=8080 script.bas\n"
+        "  " << prog << " --mapn scores:W1ABC=100 --queue msgs:hello script.bas\n"
         "  " << prog << "\n";
 }
 
@@ -469,7 +568,9 @@ int main(int argc, char** argv) {
     bool        trace      = false;
     bool        open_repl  = false;
     std::string file;
-    std::vector<VarSpec> vars;
+    std::vector<VarSpec>   vars;
+    std::vector<MapSpec>   maps;
+    std::vector<QueueSpec> queues;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -485,6 +586,14 @@ int main(int argc, char** argv) {
             return 0;
         } else if ((a == "-v" || a == "--var") && i + 1 < argc) {
             vars.push_back(parse_var_spec(argv[++i]));
+        } else if (a == "--map" && i + 1 < argc) {
+            maps.push_back(parse_map_spec(argv[++i], /*numeric=*/false));
+        } else if (a == "--mapn" && i + 1 < argc) {
+            maps.push_back(parse_map_spec(argv[++i], /*numeric=*/true));
+        } else if (a == "--queue" && i + 1 < argc) {
+            queues.push_back(parse_queue_spec(argv[++i], /*numeric=*/false));
+        } else if (a == "--queuen" && i + 1 < argc) {
+            queues.push_back(parse_queue_spec(argv[++i], /*numeric=*/true));
         } else if (a[0] != '-') {
             if (file.empty()) {
                 file = a;
@@ -517,9 +626,11 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        // Apply vars after load_file: load_file calls clear() internally,
-        // which would wipe any variables set before loading.
+        // Apply data after load_file: load_file calls clear() internally,
+        // which would wipe any variables / maps / queues set before loading.
         apply_vars(b, vars);
+        apply_maps(b, maps);
+        apply_queues(b, queues);
         configure_interp(b, trace);
         bool ok = b.run();
         g_interp = nullptr;
@@ -531,11 +642,11 @@ int main(int argc, char** argv) {
             ReplProgram prog;
             std::string errmsg;
             load_bas_file(prog, file, errmsg);
-            repl(vars, trace, &prog);
+            repl(vars, maps, queues, trace, &prog);
         }
     } else {
         // ── Interactive REPL mode ─────────────────────────────────────────
-        repl(vars, trace);
+        repl(vars, maps, queues, trace);
     }
 
     return 0;

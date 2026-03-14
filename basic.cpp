@@ -265,6 +265,37 @@ void Basic::set_num(const std::string& name, double val) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Host-side MAP / QUEUE pre-population
+// Call AFTER load_file() or load_string() — both call clear() which would
+// wipe any data set earlier.
+// ─────────────────────────────────────────────────────────────────────────────
+void Basic::map_set(const std::string& map_name, const std::string& key,
+                    const std::string& val) {
+    maps_[map_name][key] = Value(val);
+}
+
+void Basic::map_set(const std::string& map_name, const std::string& key,
+                    double val) {
+    maps_[map_name][key] = Value(val);
+}
+
+void Basic::map_clear(const std::string& map_name) {
+    maps_.erase(map_name);
+}
+
+void Basic::queue_push(const std::string& queue_name, const std::string& val) {
+    queues_[queue_name].push_back(Value(val));
+}
+
+void Basic::queue_push(const std::string& queue_name, double val) {
+    queues_[queue_name].push_back(Value(val));
+}
+
+void Basic::queue_clear(const std::string& queue_name) {
+    queues_.erase(queue_name);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Program loading
 // ─────────────────────────────────────────────────────────────────────────────
 void Basic::clear() {
