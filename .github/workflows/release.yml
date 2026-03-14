@@ -349,10 +349,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: |
-            linux-*
-            macos-arm64
-            macos-universal
+          pattern: '*'
           path: dist
           merge-multiple: true
 
