@@ -55,15 +55,15 @@ BASIC_OBJ = basic.o
 
 # ── SimpleBLE (vendor build) ──────────────────────────────────────────────────
 SIMPLEBLE_DIR = vendor/simpleble
-# CMake-generated export.h (build/export or build/include)
-SIMPLEBLE_GEN := $(shell find $(SIMPLEBLE_DIR)/build -name 'export.h' -path '*/simpleble/*' 2>/dev/null \
-                   | sed 's|/simpleble/export.h||' | head -1)
-# kvn_bytearray.h — submodule, lives somewhere under the source tree
-SIMPLEBLE_KVN := $(shell find $(SIMPLEBLE_DIR) -name 'kvn_bytearray.h' 2>/dev/null \
-                   | sed 's|/kvn/kvn_bytearray.h||' | head -1)
+# Use hardcoded paths — SimpleBLE's repo structure is stable.
+# $(shell find ...) would be evaluated at parse time, before the clone step,
+# making the variables empty on a clean CI checkout.
+#   simpleble/include      — public API headers
+#   build/export           — cmake-generated export.h  (created by cmake step)
+#   dependencies/external  — kvn and other external deps (in-tree submodule)
 SIMPLEBLE_INC = -isystem $(SIMPLEBLE_DIR)/simpleble/include \
-                $(if $(SIMPLEBLE_GEN),-isystem $(SIMPLEBLE_GEN),-isystem $(SIMPLEBLE_DIR)/build/export) \
-                $(if $(SIMPLEBLE_KVN),-isystem $(SIMPLEBLE_KVN))
+                -isystem $(SIMPLEBLE_DIR)/build/export \
+                -isystem $(SIMPLEBLE_DIR)/dependencies/external
 
 ifeq ($(UNAME), Linux)
     DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1 2>/dev/null)
