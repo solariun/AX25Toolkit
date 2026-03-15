@@ -1,10 +1,10 @@
 // bt_kiss_bridge.cpp — Bluetooth KISS TNC serial bridge + AX.25 monitor (C++17)
 //
 // Supports two radio transports:
-//   BLE   — Bluetooth Low Energy (SimpleBLE, all platforms)
-//   BT    — Classic Bluetooth RFCOMM (BlueZ sockets, Linux only)
+//   BLE   — Bluetooth Low Energy (native: BlueZ D-Bus / CoreBluetooth)
+//   BT    — Classic Bluetooth RFCOMM (BlueZ sockets / IOBluetooth)
 //
-// Requires: SimpleBLE  ->  make ble-deps  (builds vendor/simpleble via cmake)
+// Requires: libdbus-1-dev (Linux, for BLE + D-Bus)
 //           libbluetooth-dev (Linux, for Classic BT)
 //
 // -- Modes ---------------------------------------------------------------
@@ -47,17 +47,15 @@
 //   across all three tools.
 //
 // -- Build ---------------------------------------------------------------
-//   make ble-deps          # build SimpleBLE (one-time, needs cmake)
 //   make bt_kiss_bridge
 
 #ifdef __APPLE__
 #  include <util.h>
 #else
 #  include <pty.h>
-#  include <dbus/dbus.h>   // BlueZ SetDiscoveryFilter (Linux only)
 #endif
 
-#include <simpleble/SimpleBLE.h>
+#include "bt_ble_native.h"
 
 #include <algorithm>
 #include <atomic>
@@ -71,7 +69,7 @@
 #include <iomanip>
 #include <iostream>
 #include <mutex>
-#include <optional>
+#include <optional>  // for BridgeConfig::force_response
 #include <signal.h>
 #include <sstream>
 #include <string>
@@ -117,13 +115,6 @@ static std::string ts() {
     localtime_r(&t, &tm_info);
     ss << std::put_time(&tm_info, "%H:%M:%S") << "."
        << std::setw(3) << std::setfill('0') << ms.count();
-    return ss.str();
-}
-
-static std::string hexdump(const uint8_t* d, size_t n) {
-    std::ostringstream ss;
-    ss << std::hex << std::setfill('0');
-    for (size_t i = 0; i < n; i++) ss << std::setw(2) << (int)d[i];
     return ss.str();
 }
 
@@ -312,6 +303,7 @@ static bool open_pty(int& master, int& slave, std::string& path) {
 // We extract XXXX regardless of the base UUID suffix, which is why vendor
 // UUIDs like 0000XXXX-ba2a-... still resolve to the standard SIG names.
 // -------------------------------------------------------------------------
+__attribute__((unused))
 static std::string uuid_name(const std::string& uuid) {
     // Well-known full 128-bit UUIDs (vendor / profile-specific)
     static const std::pair<const char*, const char*> full128[] = {
@@ -458,8 +450,7 @@ struct RadioTransport {
     virtual void disconnect() = 0;
     virtual bool is_connected() const = 0;
     virtual void write(const uint8_t* data, size_t len) = 0;
-    virtual int  read_fd() const { return -1; }          // -1 = callback-based (BLE)
-    virtual void set_on_receive(std::function<void(const uint8_t*, size_t)>) {}
+    virtual int  read_fd() const { return -1; }
     virtual void set_on_disconnect(std::function<void()>) {}
     virtual const char* label() const = 0;               // "BLE" or "BT"
 };
@@ -488,129 +479,11 @@ struct BridgeConfig {
 };
 
 // =========================================================================
-// BLE adapter helpers
-// =========================================================================
-static std::optional<SimpleBLE::Adapter> get_adapter() {
-    if (!SimpleBLE::Adapter::bluetooth_enabled()) {
-        std::cerr << "Bluetooth not enabled.\n";
-        return {};
-    }
-    auto adapters = SimpleBLE::Adapter::get_adapters();
-    if (adapters.empty()) {
-        std::cerr << "No Bluetooth adapters found.\n";
-        return {};
-    }
-    return adapters[0];
-}
-
-// -------------------------------------------------------------------------
-// Linux-only: tell BlueZ to do an active LE scan filtered to a service UUID.
-// -------------------------------------------------------------------------
-#ifdef __linux__
-static void bluez_set_discovery_filter(const std::string& adapter_id,
-                                       const std::string& service_uuid)
-{
-    if (service_uuid.empty()) return;
-
-    DBusError err;
-    dbus_error_init(&err);
-
-    DBusConnection* conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
-    if (!conn || dbus_error_is_set(&err)) {
-        dbus_error_free(&err);
-        return; // not fatal -- scan will proceed without the filter
-    }
-
-    std::string obj_path = "/org/bluez/" + adapter_id;
-
-    DBusMessage* msg = dbus_message_new_method_call(
-        "org.bluez", obj_path.c_str(), "org.bluez.Adapter1", "SetDiscoveryFilter");
-    if (!msg) { dbus_connection_unref(conn); return; }
-
-    // Build argument: a{sv}  ->  {"UUIDs": as["uuid"], "Transport": s"le"}
-    DBusMessageIter args, dict, entry, variant, arr;
-    dbus_message_iter_init_append(msg, &args);
-    dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &dict);
-
-    // "UUIDs" -> ["service_uuid"]
-    {
-        const char* key = "UUIDs";
-        dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
-        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
-        dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "as", &variant);
-        dbus_message_iter_open_container(&variant, DBUS_TYPE_ARRAY, "s", &arr);
-        const char* uuid_c = service_uuid.c_str();
-        dbus_message_iter_append_basic(&arr, DBUS_TYPE_STRING, &uuid_c);
-        dbus_message_iter_close_container(&variant, &arr);
-        dbus_message_iter_close_container(&entry, &variant);
-        dbus_message_iter_close_container(&dict, &entry);
-    }
-
-    // "Transport" -> "le"
-    {
-        const char* key = "Transport";
-        const char* val = "le";
-        dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
-        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
-        dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "s", &variant);
-        dbus_message_iter_append_basic(&variant, DBUS_TYPE_STRING, &val);
-        dbus_message_iter_close_container(&entry, &variant);
-        dbus_message_iter_close_container(&dict, &entry);
-    }
-
-    dbus_message_iter_close_container(&args, &dict);
-
-    DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn, msg, 2000, &err);
-    dbus_message_unref(msg);
-    if (reply) dbus_message_unref(reply);
-    if (dbus_error_is_set(&err)) dbus_error_free(&err); // non-fatal
-    dbus_connection_unref(conn);
-}
-#endif // __linux__
-
-static std::optional<SimpleBLE::Peripheral>
-find_peripheral(SimpleBLE::Adapter& adapter,
-                const std::string& address,
-                int timeout_ms,
-                [[maybe_unused]] const std::string& service_uuid = "")
-{
-    std::string target = lower(address);
-    std::optional<SimpleBLE::Peripheral> found;
-    std::mutex mx;
-    std::atomic<bool> done{false};
-
-    // Match by address OR by name (identifier) -- case-insensitive
-    auto check = [&](SimpleBLE::Peripheral p) {
-        if (lower(p.address())    == target ||
-            lower(p.identifier()) == target) {
-            std::lock_guard<std::mutex> lk(mx);
-            if (!found) { found = p; done = true; }
-        }
-    };
-
-    adapter.set_callback_on_scan_found  ([&](SimpleBLE::Peripheral p) { check(p); });
-    adapter.set_callback_on_scan_updated([&](SimpleBLE::Peripheral p) { check(p); });
-
-#ifdef __linux__
-    bluez_set_discovery_filter(adapter.identifier(), service_uuid);
-#endif
-
-    adapter.scan_start();
-    auto deadline = std::chrono::steady_clock::now()
-                  + std::chrono::milliseconds(timeout_ms);
-    while (!done && std::chrono::steady_clock::now() < deadline)
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    adapter.scan_stop();
-    return found;
-}
-
-// =========================================================================
-// BleTransport -- wraps all SimpleBLE interactions
+// BleTransport -- wraps native BLE via bt_ble_native.h C-linkage API
 // =========================================================================
 class BleTransport : public RadioTransport {
     const BridgeConfig& cfg_;
-    std::optional<SimpleBLE::Adapter>     adapter_;
-    std::optional<SimpleBLE::Peripheral>  peripheral_;
+    ble_handle_t handle_ = nullptr;
 
     // Async write queue + writer thread
     std::mutex                        tx_mx_;
@@ -619,100 +492,29 @@ class BleTransport : public RadioTransport {
     std::atomic<bool>                 tx_stop_{false};
     std::thread                       writer_thread_;
 
-    // BLE write parameters (detected at connect time)
-    int  chunk_size_  = 20;
-    bool use_response_= false;
-
     // Callbacks
-    std::function<void(const uint8_t*, size_t)> on_receive_;
-    std::function<void()>                       on_disconnect_;
-
-    // Disconnect flag
-    std::atomic<bool> disconnected_{false};
+    std::function<void()> on_disconnect_;
 
     // Keep-alive timer
     using SteadyClock = std::chrono::steady_clock;
     std::atomic<SteadyClock::time_point> last_write_{SteadyClock::now()};
-
-    // Resolved UUIDs (from config or auto-detected)
-    std::string auto_service_, auto_write_, auto_read_;
-
-    // Auto-detect GATT UUIDs — find a service containing both a writable
-    // and a notifiable characteristic.  Skip standard GAP/GATT services.
-    void auto_detect_uuids() {
-        if (!peripheral_) return;
-
-        // Standard services to skip (Generic Access / Generic Attribute)
-        static const char* skip[] = {
-            "00001800-0000-1000-8000-00805f9b34fb",
-            "00001801-0000-1000-8000-00805f9b34fb",
-            "1800", "1801",
-        };
-        auto dominated = [&](const std::string& uuid) {
-            for (auto& s : skip)
-                if (uuid == s) return true;
-            return false;
-        };
-
-        // Phase 1 — find a service with BOTH write + notify/indicate
-        for (auto& svc : peripheral_->services()) {
-            if (dominated(svc.uuid())) continue;
-            std::string w, r;
-            for (auto& chr : svc.characteristics()) {
-                if (w.empty() &&
-                    (chr.can_write_command() || chr.can_write_request()))
-                    w = chr.uuid();
-                if (r.empty() &&
-                    (chr.can_notify() || chr.can_indicate()))
-                    r = chr.uuid();
-            }
-            if (!w.empty() && !r.empty()) {
-                auto_service_ = svc.uuid();
-                auto_write_   = w;
-                auto_read_    = r;
-                return;  // best match — single service with both
-            }
-        }
-
-        // Phase 2 — fallback: pick first writable + first notifiable globally
-        //           (still skip GAP/GATT)
-        for (auto& svc : peripheral_->services()) {
-            if (dominated(svc.uuid())) continue;
-            for (auto& chr : svc.characteristics()) {
-                if (auto_write_.empty() &&
-                    (chr.can_write_command() || chr.can_write_request())) {
-                    auto_write_ = chr.uuid();
-                    if (auto_service_.empty()) auto_service_ = svc.uuid();
-                }
-                if (auto_read_.empty() &&
-                    (chr.can_notify() || chr.can_indicate())) {
-                    auto_read_ = chr.uuid();
-                    if (auto_service_.empty()) auto_service_ = svc.uuid();
-                }
-            }
-        }
-    }
 
 public:
     explicit BleTransport(const BridgeConfig& cfg) : cfg_(cfg) {}
     ~BleTransport() override { disconnect(); }
 
     const char* label() const override { return "BLE"; }
-    int  read_fd() const override { return -1; }  // callback-based
 
-    void set_on_receive(std::function<void(const uint8_t*, size_t)> cb) override {
-        on_receive_ = std::move(cb);
+    int read_fd() const override {
+        return handle_ ? ble_read_fd(handle_) : -1;
     }
+
     void set_on_disconnect(std::function<void()> cb) override {
         on_disconnect_ = std::move(cb);
     }
 
     bool is_connected() const override {
-        if (disconnected_) return false;
-        if (!peripheral_) return false;
-        // SimpleBLE::Peripheral::is_connected() is non-const, cast away const
-        try { return const_cast<SimpleBLE::Peripheral&>(*peripheral_).is_connected(); }
-        catch (...) { return false; }
+        return handle_ && ble_is_connected(handle_);
     }
 
     // Keep-alive: returns true if a keep-alive was sent
@@ -729,94 +531,23 @@ public:
     }
 
     bool connect() override {
-        disconnected_ = false;
         tx_stop_ = false;
 
-        // Initialize resolved UUIDs from config (may be empty for auto-detect)
-        auto_service_ = cfg_.service_uuid;
-        auto_write_   = cfg_.write_uuid;
-        auto_read_    = cfg_.read_uuid;
+        handle_ = ble_connect(
+            cfg_.address.c_str(),
+            cfg_.service_uuid.empty() ? nullptr : cfg_.service_uuid.c_str(),
+            cfg_.write_uuid.empty()   ? nullptr : cfg_.write_uuid.c_str(),
+            cfg_.read_uuid.empty()    ? nullptr : cfg_.read_uuid.c_str(),
+            cfg_.timeout,
+            cfg_.mtu,
+            cfg_.force_response.has_value() && *cfg_.force_response);
 
-        // Find adapter
-        adapter_ = get_adapter();
-        if (!adapter_) {
-            std::cerr << "  No Bluetooth adapter available.\n";
-            return false;
-        }
+        if (!handle_) return false;
 
-        // Find peripheral
-        peripheral_ = find_peripheral(*adapter_, cfg_.address,
-                                      (int)(cfg_.timeout * 1000), cfg_.service_uuid);
-        if (!peripheral_) {
-            std::cerr << "[" << ts() << "]  Device " << cfg_.address << " not found.\n";
-            return false;
-        }
-
-        try { peripheral_->connect(); }
-        catch (const std::exception& e) {
-            std::cerr << "[" << ts() << "]  Connect failed: " << e.what() << "\n";
-            return false;
-        }
-
-        // Auto-detect UUIDs if not specified
-        if (auto_service_.empty() || auto_write_.empty() || auto_read_.empty()) {
-            auto_detect_uuids();
-            if (auto_service_.empty() || auto_write_.empty() || auto_read_.empty()) {
-                std::cerr << "  Cannot auto-detect BLE UUIDs.  Use --service, --write, --read.\n";
-                try { peripheral_->disconnect(); } catch (...) {}
-                return false;
-            }
-            std::cout << "  Auto-detected UUIDs:\n"
-                      << "    service: " << auto_service_ << "\n"
-                      << "    write  : " << auto_write_   << "\n"
-                      << "    read   : " << auto_read_    << "\n";
-        }
-
-        const std::string& svc_uuid   = auto_service_;
-        const std::string& write_uuid = auto_write_;
-        const std::string& read_uuid  = auto_read_;
-
-        // Capability check
-        bool can_wwr = false, can_wr = false;
-        for (auto& svc : peripheral_->services()) {
-            if (lower(svc.uuid()) != lower(svc_uuid)) continue;
-            for (auto& chr : svc.characteristics()) {
-                if (lower(chr.uuid()) != lower(write_uuid)) continue;
-                can_wwr = chr.can_write_command();
-                can_wr  = chr.can_write_request();
-            }
-        }
-        use_response_ = cfg_.force_response.has_value()
-                       ? *cfg_.force_response
-                       : (!can_wwr && can_wr);
-
-        uint16_t mtu_val = 23;
-        try { mtu_val = peripheral_->mtu(); } catch (...) {}
-        if (mtu_val < 23) mtu_val = 23;
-        chunk_size_ = std::max(1, std::min(cfg_.mtu, (int)mtu_val) - 3);
-
-        std::cout << "  Connected.  MTU=" << mtu_val
-                  << "  chunk=" << chunk_size_ << "b"
-                  << "  wwr=" << (can_wwr ? "yes" : "no")
-                  << "  response=" << (use_response_ ? "yes" : "no") << "\n";
         if (cfg_.ble_ka_ms > 0)
             std::cout << "  BLE keep-alive: " << cfg_.ble_ka_ms / 1000
                       << "s  (KISS null writes)\n";
         std::cout.flush();
-
-        // Disconnect callback
-        peripheral_->set_callback_on_disconnected([this]() {
-            disconnected_ = true;
-            if (on_disconnect_) on_disconnect_();
-        });
-
-        // Notify subscription
-        peripheral_->notify(svc_uuid, read_uuid,
-            [this](SimpleBLE::ByteArray raw) {
-                if (on_receive_) {
-                    on_receive_(raw.data(), raw.size());
-                }
-            });
 
         // Start writer thread
         last_write_.store(SteadyClock::now());
@@ -831,18 +562,9 @@ public:
                     pkt = std::move(tx_queue_.front());
                     tx_queue_.pop_front();
                 }
-                try {
-                    for (int i = 0; i < (int)pkt.size(); i += chunk_size_) {
-                        int clen = std::min(chunk_size_, (int)pkt.size() - i);
-                        SimpleBLE::ByteArray chunk(pkt.data() + i, pkt.data() + i + clen);
-                        if (use_response_)
-                            peripheral_->write_request(auto_service_, auto_write_, chunk);
-                        else
-                            peripheral_->write_command(auto_service_, auto_write_, chunk);
-                    }
+                if (handle_) {
+                    ble_write(handle_, pkt.data(), pkt.size());
                     last_write_.store(SteadyClock::now());
-                } catch (const std::exception& e) {
-                    std::cerr << "  BLE write error: " << e.what() << "\n";
                 }
             }
         });
@@ -862,15 +584,10 @@ public:
         tx_cv_.notify_one();
         if (writer_thread_.joinable()) writer_thread_.join();
 
-        // BLE cleanup
-        if (peripheral_) {
-            if (!auto_service_.empty() && !auto_read_.empty()) {
-                try { peripheral_->unsubscribe(auto_service_, auto_read_); } catch (...) {}
-            }
-            try { peripheral_->disconnect(); } catch (...) {}
+        if (handle_) {
+            ble_disconnect(handle_);
+            handle_ = nullptr;
         }
-        peripheral_.reset();
-        adapter_.reset();
     }
 };
 
@@ -1104,47 +821,9 @@ public:
 // SCAN modes
 // =========================================================================
 
-// -- BLE scan (all platforms) --
+// -- BLE scan (all platforms, native) --
 static void do_ble_scan(double timeout_s) {
-    auto opt = get_adapter();
-    if (!opt) return;
-    auto& adapter = *opt;
-
-    struct Entry { SimpleBLE::Peripheral p; int rssi; };
-    std::vector<Entry> found;
-    std::mutex mx;
-
-    adapter.set_callback_on_scan_found([&](SimpleBLE::Peripheral p) {
-        std::lock_guard<std::mutex> lk(mx);
-        std::string addr = lower(p.address());
-        for (auto& e : found)
-            if (lower(e.p.address()) == addr) return;
-        found.push_back({p, p.rssi()});
-    });
-
-    std::cout << "Scanning for BLE devices (" << (int)timeout_s << "s)...\n\n";
-    adapter.scan_for((int)(timeout_s * 1000));
-
-    std::sort(found.begin(), found.end(),
-              [](const Entry& a, const Entry& b){ return a.rssi > b.rssi; });
-
-    for (auto& [p, rssi] : found) {
-        std::cout << hr() << "\n";
-        std::cout << "  Name   : " << (p.identifier().empty() ? "(no name)" : p.identifier()) << "\n";
-        std::cout << "  Address: " << p.address() << "\n";
-        std::cout << "  RSSI   : " << rssi << " dBm\n";
-        auto svcs = p.services();
-        if (!svcs.empty()) {
-            std::cout << "  Services advertised:\n";
-            for (auto& s : svcs)
-                std::cout << "    " << s.uuid()
-                          << "  (" << uuid_name(s.uuid()) << ")\n";
-        }
-        std::cout << "\n";
-    }
-    std::cout << hr('=') << "\n";
-    std::cout << "Found " << found.size() << " BLE device(s).\n";
-    std::cout << "\nNext step:\n  bt_kiss_bridge --ble --inspect <ADDRESS>\n";
+    ble_scan(timeout_s);
 }
 
 // -- Classic BT scan (Linux only) --
@@ -1232,94 +911,9 @@ static void do_scan(double timeout_s, BridgeConfig::Transport transport) {
 // INSPECT modes
 // =========================================================================
 
-// -- BLE inspect (all platforms) --
+// -- BLE inspect (all platforms, native) --
 static void do_ble_inspect(const std::string& address) {
-    auto opt = get_adapter();
-    if (!opt) return;
-    auto& adapter = *opt;
-
-    std::cout << "Searching for " << address << " (BLE)...\n";
-    auto popt = find_peripheral(adapter, address, 10000);
-    if (!popt) { std::cerr << "Device not found.\n"; return; }
-    auto& p = *popt;
-
-    std::cout << "Connecting...\n";
-    try { p.connect(); }
-    catch (const std::exception& e) { std::cerr << "Connect failed: " << e.what() << "\n"; return; }
-
-    std::string dev_name = p.identifier().empty() ? address : p.identifier();
-    std::cout << "Connected: " << dev_name << "  MTU=" << p.mtu() << "\n\n";
-
-    // Candidates for the bridge command suggestion
-    std::string best_svc, best_write, best_read;
-
-    for (auto& svc : p.services()) {
-        std::string sname = uuid_name(svc.uuid());
-        std::cout << "SERVICE " << svc.uuid() << ": " << sname << "\n";
-
-        for (auto& chr : svc.characteristics()) {
-            // Build capability list
-            std::vector<std::string> caps;
-            if (chr.can_read())            caps.push_back("read");
-            if (chr.can_notify())          caps.push_back("notify");
-            if (chr.can_indicate())        caps.push_back("indicate");
-            if (chr.can_write_request())   caps.push_back("write");
-            if (chr.can_write_command())   caps.push_back("write-without-response");
-
-            std::string caps_str;
-            for (size_t i = 0; i < caps.size(); ++i) {
-                if (i) caps_str += ", ";
-                caps_str += caps[i];
-            }
-
-            std::string cname = uuid_name(chr.uuid());
-            std::cout << "     CHARACTERISTIC " << chr.uuid()
-                      << ": " << cname
-                      << "  [" << caps_str << "]\n";
-
-            // Read current value for readable characteristics
-            if (chr.can_read()) {
-                try {
-                    auto val = p.read(svc.uuid(), chr.uuid());
-                    // Try to show as printable string, fall back to hex
-                    bool printable = !val.empty();
-                    for (auto b : val)
-                        if (b < 0x20 || b > 0x7E) { printable = false; break; }
-                    if (printable) {
-                        std::cout << "         Value: \""
-                                  << std::string(val.begin(), val.end()) << "\"\n";
-                    } else if (!val.empty()) {
-                        std::cout << "         Value: " << hexdump(val.data(), val.size()) << "\n";
-                    }
-                } catch (...) {}
-            }
-
-            // Descriptors
-            for (auto& desc : chr.descriptors()) {
-                std::string dname = uuid_name(desc.uuid());
-                std::cout << "         DESCRIPTOR " << desc.uuid()
-                          << ": " << dname << "\n";
-            }
-
-            // Track best candidates for bridge command
-            if (best_svc.empty()) best_svc = svc.uuid();
-            if (best_write.empty() &&
-                (chr.can_write_command() || chr.can_write_request()))
-                best_write = chr.uuid();
-            if (best_read.empty() && (chr.can_notify() || chr.can_indicate()))
-                best_read = chr.uuid();
-        }
-        std::cout << "\n";
-    }
-
-    std::cout << hr('=') << "\n";
-    std::cout << "\nSuggested bridge command:\n";
-    std::cout << "  bt_kiss_bridge --ble \\\n"
-              << "      --device   " << address << " \\\n"
-              << "      --service  " << (best_svc.empty()   ? "<SERVICE-UUID>"  : best_svc)   << " \\\n"
-              << "      --write    " << (best_write.empty() ? "<WRITE-CHAR-UUID>": best_write) << " \\\n"
-              << "      --read     " << (best_read.empty()  ? "<NOTIFY-CHAR-UUID>": best_read) << "\n";
-    p.disconnect();
+    ble_inspect(address.c_str(), 10.0);
 }
 
 // -- Classic BT inspect (Linux only) --
@@ -1603,65 +1197,6 @@ static void do_bridge(const BridgeConfig& cfg, RadioTransport& transport) {
             std::cout.flush();
             g_transport_disc = true;
         });
-
-        // For callback-based transports (BLE): set receive handler
-        if (transport.read_fd() < 0) {
-            transport.set_on_receive([&](const uint8_t* d, size_t n) {
-                std::lock_guard<std::mutex> lk(mx);
-
-                if (master_fd >= 0 && ::write(master_fd, d, n) < 0)
-                    std::cerr << "  PTY write error: " << strerror(errno) << "\n";
-
-                std::vector<int> dead;
-                for (int fd : tcp_clients) {
-                    if (::write(fd, d, n) < 0) dead.push_back(fd);
-                }
-                for (int fd : dead) {
-                    tcp_clients.erase(
-                        std::remove(tcp_clients.begin(), tcp_clients.end(), fd),
-                        tcp_clients.end());
-                    ::close(fd);
-                    if (cfg.monitor)
-                        std::cout << "[" << ts() << "]  TCP client fd=" << fd
-                                  << " removed (write error)\n";
-                }
-
-                ++rx_frames;
-
-                if (cfg.monitor) {
-                    // Use a thread-local decoder so we don't need another lock
-                    static thread_local KissDecoder decoder;
-                    std::string t = ts();
-                    auto frames = decoder.feed(d, n);
-
-                    if (frames.empty()) {
-                        std::cout << DIM() << "[" << t << "]  <- " << transport.label() << "  "
-                                  << n << " bytes (buffering)\n"
-                                  << hex_dump(d, n, "           ") << RESET();
-                    }
-                    for (auto& kf : frames) {
-                        if (kf.type == 0 && !kf.payload.empty()) {
-                            auto ax = decode_ax25(kf.payload.data(), kf.payload.size());
-                            std::cout << "[" << t << "]  <- " << transport.label()
-                                      << "  " << ax.summary << "\n";
-                            print_frame_detail(ax, kf.payload.data(), kf.payload.size());
-                        } else {
-                            static constexpr const char* cmd_names[] =
-                                {"DATA","TXDELAY","P","SLOTTIME","TXTAIL",
-                                 "FULLDUPLEX","SETHW","?","?","?","?","?","?","?","?","RETURN"};
-                            std::cout << DIM() << "[" << t << "]  <- " << transport.label()
-                                      << "  KISS cmd="
-                                      << cmd_names[kf.type & 0xF] << " port=" << kf.port
-                                      << "  " << kf.payload.size() << " bytes\n";
-                            if (!kf.payload.empty())
-                                std::cout << hex_dump(kf.payload.data(), kf.payload.size(), "           ");
-                            std::cout << RESET();
-                        }
-                    }
-                    std::cout.flush();
-                }
-            });
-        }
 
         if (!transport.connect()) continue; // retry
 
@@ -2005,7 +1540,6 @@ static void usage(const char* prog) {
         "  " << prog << " --bt --device AA:BB:CC:DD:EE:FF --channel 1 \\\n"
         "             --server-port 8001 --monitor\n\n"
         "Build:\n"
-        "  make ble-deps          # clone + build SimpleBLE (one time)\n"
         "  make bt_kiss_bridge\n";
 }
 

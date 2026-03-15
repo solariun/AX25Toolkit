@@ -22,5 +22,5 @@ lib/
 *.d
 *.o
 
-# SimpleBLE build output (submodule source stays tracked)
-vendor/simpleble/build/
+# Vendor build output
+vendor/

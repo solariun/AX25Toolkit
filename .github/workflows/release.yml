@@ -33,8 +33,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install dependencies
         run: |
@@ -83,8 +81,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install dependencies
         run: |
@@ -137,8 +133,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install cross-compiler + deps
         run: |
@@ -166,7 +160,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-            pkg-config cmake \
+            pkg-config \
             libsqlite3-dev:armhf \
             libdbus-1-dev:armhf libbluetooth-dev:armhf
 
@@ -179,24 +173,9 @@ jobs:
       - name: Build bt_kiss_bridge (cross)
         continue-on-error: true
         run: |
-          # Cross-compile SimpleBLE for armhf
-          cmake -S vendor/simpleble/simpleble \
-                -B vendor/simpleble/build-armhf \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DSIMPLEBLE_BUILD_SHARED_LIBS=OFF \
-                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-                -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
-                -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
-                -DCMAKE_FIND_ROOT_PATH=/usr/arm-linux-gnueabihf \
-                -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
-                -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
-                -DPKG_CONFIG_EXECUTABLE=/usr/bin/pkg-config
-          cmake --build vendor/simpleble/build-armhf \
-                --config Release -j$(nproc)
           make bt_kiss_bridge \
             CXX=arm-linux-gnueabihf-g++ \
-            PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig \
-            BLE_LIB=vendor/simpleble/build-armhf/lib/libsimpleble.a
+            PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
 
       # Tests cannot run cross-compiled binaries — skip.
 
@@ -226,11 +205,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install dependencies
-        run: brew install googletest sqlite cmake
+        run: brew install googletest sqlite
 
       - name: Build core apps
         run: make bbs ax25kiss ax25tnc basic_tool
@@ -277,8 +254,8 @@ jobs:
   #   • AppleClang supports -arch x86_64 natively on arm64 hosts.
   #   • The macOS system libsqlite3 is a universal dylib — safe to link from
   #     either arch without the brew arm64-only copy.
-  #   • SimpleBLE is rebuilt for x86_64 via -DCMAKE_OSX_ARCHITECTURES=x86_64
-  #     (best-effort; bt_kiss_bridge falls back to arm64-only if it fails).
+  #   • bt_kiss_bridge uses CoreBluetooth + IOBluetooth (system frameworks),
+  #     no external deps needed for cross-compile.
   # ============================================================================
   macos-universal:
     name: macOS Universal
@@ -287,11 +264,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install dependencies
-        run: brew install googletest sqlite cmake
+        run: brew install googletest sqlite
 
       - name: Download ARM64 binaries
         uses: actions/download-artifact@v4
@@ -314,17 +289,8 @@ jobs:
       - name: Build bt_kiss_bridge x86_64 (best-effort)
         continue-on-error: true
         run: |
-          cmake -S vendor/simpleble/simpleble \
-                -B vendor/simpleble/build-x86_64 \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DSIMPLEBLE_BUILD_SHARED_LIBS=OFF \
-                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-                -DCMAKE_OSX_ARCHITECTURES=x86_64
-          cmake --build vendor/simpleble/build-x86_64 \
-                --config Release -j$(sysctl -n hw.logicalcpu)
           make bt_kiss_bridge \
-            CXX="clang++ -arch x86_64" \
-            BLE_LIB=vendor/simpleble/build-x86_64/lib/libsimpleble.a
+            CXX="clang++ -arch x86_64"
           cp bt_kiss_bridge bins/x86_64/
 
       - name: Create universal binaries with lipo
@@ -373,8 +339,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4

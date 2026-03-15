@@ -136,7 +136,6 @@ PACKAGES=(
     # Build tools
     build-essential
     git
-    cmake
     pkg-config
 
     # Libraries
@@ -232,16 +231,12 @@ else
     cd "${INSTALL_DIR}"
 fi
 
-info "Initialising submodules (SimpleBLE vendor)..."
-git submodule update --init --recursive
-success "Submodules ready"
-
 info "Building core binaries..."
 make -j"$(nproc)" bbs ax25kiss ax25tnc basic_tool
 success "Core binaries built"
 
 info "Building BT bridge..."
-if make -j"$(nproc)" ble-deps && make -j"$(nproc)" bt_kiss_bridge; then
+if make -j"$(nproc)" bt_kiss_bridge; then
     success "BT KISS bridge built"
     BLE_BRIDGE_BUILT=1
 else

@@ -12,9 +12,6 @@ env:
 jobs:
   # ── Core build + tests ─────────────────────────────────────────────────────
   # Builds bbs / ax25kiss / ax25tnc and runs the full test suite.
-  # bt_kiss_bridge is excluded here because it requires SimpleBLE (cmake +
-  # libdbus-1-dev on Linux, CoreBluetooth on macOS) — those deps are handled
-  # in the separate "bt-bridge" job below.
   build-and-test:
     strategy:
       fail-fast: false
@@ -30,8 +27,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       # ── Linux deps ─────────────────────────────────────────────────────────
       - name: Install dependencies (Ubuntu)
@@ -64,8 +59,8 @@ jobs:
 
   # ── BT bridge (macOS only, non-blocking) ──────────────────────────────────
   # Verifies that bt_kiss_bridge still compiles. Runs on macOS because it has
-  # CoreBluetooth out of the box. Failures here are reported but do NOT block
-  # merges — BT deps are heavier and more platform-specific.
+  # CoreBluetooth + IOBluetooth out of the box (no extra deps needed).
+  # Failures here are reported but do NOT block merges.
   build-bt-bridge:
     name: BT bridge (macOS, optional)
     runs-on: macos-latest
@@ -73,13 +68,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Install cmake
-        run: brew install cmake
-
-      - name: Build SimpleBLE + bt_kiss_bridge
+      - name: Build bt_kiss_bridge
         run: make bt_kiss_bridge
 
       - name: Create ble_kiss_bridge symlink

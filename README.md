@@ -13,29 +13,20 @@ remote shell access, an interactive KISS terminal, and a 170-test GoogleTest sui
 ## Quick Start
 
 ```bash
-# 1. Clone with submodules (SimpleBLE is vendored)
-git clone --recurse-submodules https://github.com/solariun/KISSBBS
+# 1. Clone the repository
+git clone https://github.com/solariun/KISSBBS
 cd KISSBBS
 
 # 2. Install build dependencies
 #    macOS
-brew install googletest sqlite cmake
+brew install googletest sqlite
 #    Ubuntu / Debian
-sudo apt-get install libgtest-dev libsqlite3-dev cmake libdbus-1-dev pkg-config
+sudo apt-get install libgtest-dev libsqlite3-dev libdbus-1-dev libbluetooth-dev pkg-config
 
-# 3. Build core apps + run tests
+# 3. Build everything + run tests
 make          # builds: bbs  ax25kiss  ax25tnc  basic_tool  bt_kiss_bridge
 make test     # runs 170 tests — must all pass
-
-# 4. (Optional) Bluetooth bridge — macOS & Linux with BlueZ
-make ble-deps          # compiles SimpleBLE once from vendor/simpleble
-make bt_kiss_bridge    # links bt_kiss_bridge (BLE + Classic BT)
 ```
-
-> **First clone on an existing checkout?**
-> ```bash
-> git submodule update --init --recursive
-> ```
 
 ---
 
@@ -501,36 +492,30 @@ sequenceDiagram
 
 | Platform | Compiler | Required | Optional |
 |----------|----------|----------|----------|
-| macOS    | Xcode CLT (`xcode-select --install`) | — | `brew install sqlite cmake` |
-| Linux    | `g++` ≥ 7 | `build-essential` | `libsqlite3-dev cmake libdbus-1-dev` |
+| macOS    | Xcode CLT (`xcode-select --install`) | — | `brew install sqlite` |
+| Linux    | `g++` ≥ 7 | `build-essential` | `libsqlite3-dev libdbus-1-dev libbluetooth-dev` |
 
 **SQLite3** — needed for the `DBOPEN/DBEXEC/DBQUERY` BASIC commands.
 The Makefile auto-detects it via `pkg-config`; everything else compiles without it.
 
-**cmake** — needed only for `bt_kiss_bridge` (see §17).
-
 ```bash
 # macOS
-brew install googletest sqlite cmake
+brew install googletest sqlite
 
 # Ubuntu / Debian
-sudo apt-get install libgtest-dev libsqlite3-dev cmake libdbus-1-dev
+sudo apt-get install libgtest-dev libsqlite3-dev libdbus-1-dev libbluetooth-dev
 
 # Fedora
-sudo dnf install gtest-devel sqlite-devel cmake dbus-devel
+sudo dnf install gtest-devel sqlite-devel dbus-devel bluez-libs-devel
 ```
 
 ### Build targets
 
 ```bash
-make                  # build bbs, ax25kiss, ax25tnc, and bt_kiss_bridge
-                      # (SimpleBLE is cloned and built automatically on first run)
+make                  # build bbs, ax25kiss, ax25tnc, basic_tool, and bt_kiss_bridge
 make test             # compile and run all unit tests
 make clean            # remove all build artefacts
-
-# Bluetooth bridge (built automatically by `make`, but can also be triggered manually)
-make ble-deps         # clone + build SimpleBLE into vendor/simpleble  (once)
-make bt_kiss_bridge  # build the Bluetooth KISS bridge (BLE + Classic BT)
+make bt_kiss_bridge   # build only the Bluetooth KISS bridge (BLE + Classic BT)
 ```
 
 To cross-compile or choose a different compiler:
@@ -2642,14 +2627,14 @@ Use `--inspect` to confirm UUIDs for your specific device.
 
 | Transport | Library / Framework | Platforms | Use case |
 |-----------|-------------------|-----------|----------|
-| **BLE** | SimpleBLE → BlueZ / CoreBluetooth | Linux + macOS | Mobilinkd TNC4, NinoTNC-BT, etc. |
+| **BLE** | Native: BlueZ D-Bus (Linux) / CoreBluetooth (macOS) | Linux + macOS | Mobilinkd TNC4, NinoTNC-BT, etc. |
 | **Classic BT** | BlueZ RFCOMM / IOBluetooth RFCOMM | Linux + macOS | Kenwood TH-D75, TH-D74, other SPP radios |
 
 ### Object Relationship Diagram
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────────┐
-  │  bt_kiss_bridge.cpp + bt_rfcomm_macos.mm                                     │
+  │  bt_kiss_bridge.cpp + bt_ble_native.h + bt_rfcomm_macos.h                   │
   └──────────────────────────────────────────────────────────────────────────────┘
 
   ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -2659,8 +2644,7 @@ Use `--inspect` to confirm UUIDs for your specific device.
   │  + disconnect()                                                              │
   │  + is_connected() → bool                                                     │
   │  + write(data, len)                                                          │
-  │  + read_fd() → int           (-1 = callback-based, ≥0 = fd for select())    │
-  │  + set_on_receive(cb)        (BLE only — callback RX)                        │
+  │  + read_fd() → int           (≥0 = fd for select(), all transports)         │
   │  + set_on_disconnect(cb)                                                     │
   │  + label() → "BLE" | "BT"                                                   │
   └──────────────────────────────────────────────────────────────────────────────┘
@@ -2669,11 +2653,11 @@ Use `--inspect` to confirm UUIDs for your specific device.
   ┌───────────────────────────────┐   ┌────────────────────────────────────────┐
   │  BleTransport                 │   │  BtTransport                            │
   │  ─────────────────────────── │   │  ────────────────────────────────────── │
-  │  SimpleBLE peripheral_        │   │  Linux: BlueZ RFCOMM socket (fd_)       │
+  │  ble_handle_t (native API)    │   │  Linux: BlueZ RFCOMM socket (fd_)       │
   │  Async TX queue + writer thd  │   │  macOS: IOBluetooth RFCOMM + pipe() fd  │
-  │  Callback RX (notify)         │   │  Direct TX (::write / writeSync)        │
+  │  Notify → pipe fd (RX)        │   │  Direct TX (::write / writeSync)        │
   │  BLE keep-alive timer         │   │  SDP auto-detect SPP channel (0x1101)   │
-  │  read_fd() = -1               │   │  read_fd() = socket fd / pipe read fd   │
+  │  read_fd() = pipe read fd     │   │  read_fd() = socket fd / pipe read fd   │
   └───────────────────────────────┘   └────────────────────────────────────────┘
                                               │
                                       ┌───────┴──────────────┐
@@ -2700,7 +2684,7 @@ Use `--inspect` to confirm UUIDs for your specific device.
   ┌──────────────────────────────────────────────────────────────────────────────┐
   │  Discovery                                                                   │
   │  ──────────────────────────────────────────────────────────────────────────  │
-  │  do_ble_scan()  → SimpleBLE adapter scan (all platforms)                     │
+  │  do_ble_scan()  → native BLE scan (BlueZ D-Bus / CoreBluetooth)              │
   │  do_bt_scan()   → HCI inquiry (Linux) / IOBluetoothDeviceInquiry (macOS)    │
   │  do_ble_inspect()→ GATT service + characteristic enumeration                 │
   │  do_bt_inspect() → SDP service browsing + RFCOMM channel extraction          │
@@ -2725,16 +2709,15 @@ classDiagram
     }
 
     class BleTransport {
-        -SimpleBLE::Peripheral peripheral_
+        -ble_handle_t handle_
         -thread writer_thread_
         -mutex tx_mx_
         -queue tx_queue_
-        -function on_receive_
         -SteadyClock last_write_
         -int chunk_size_
         +connect() bool
         +write(data, len)
-        +read_fd() int  «returns -1»
+        +read_fd() int  «returns pipe fd»
         +maybe_keepalive()
         +label() string «BLE»
     }
@@ -2794,7 +2777,7 @@ flowchart LR
 
     subgraph bt_kiss_bridge
         subgraph Transport
-            BLE["BleTransport<br/>SimpleBLE notify"]
+            BLE["BleTransport<br/>Native BLE (pipe fd)"]
             BT_L["BtTransport (Linux)<br/>RFCOMM socket fd"]
             BT_M["BtTransport (macOS)<br/>IOBluetooth → pipe fd"]
         end
@@ -2828,17 +2811,16 @@ flowchart LR
 ### Build
 
 ```bash
-# 1 — install cmake + dbus dev headers (once)
-#   macOS : brew install cmake
-#   Ubuntu: sudo apt-get install cmake libdbus-1-dev libbluetooth-dev
-#   Fedora: sudo dnf install cmake dbus-devel bluez-libs-devel
+# 1 — install dev headers (once)
+#   macOS : no extra deps (CoreBluetooth + IOBluetooth are system frameworks)
+#   Ubuntu: sudo apt-get install libdbus-1-dev libbluetooth-dev
+#   Fedora: sudo dnf install dbus-devel bluez-libs-devel
 
-# 2 — build everything (SimpleBLE is cloned and compiled automatically)
+# 2 — build everything
 make
 
 # Or build only bt_kiss_bridge explicitly:
-make ble-deps         # clone + build SimpleBLE into vendor/simpleble  (once)
-make bt_kiss_bridge   # compile the bridge
+make bt_kiss_bridge   # compile the bridge (no external deps needed)
 
 # 3 — (optional) install to /usr/local/bin alongside the other tools
 sudo make install
@@ -2946,7 +2928,7 @@ Classic BT does not need this — RFCOMM handles link maintenance natively.
 
 | Feature | Linux | macOS |
 |---------|-------|-------|
-| BLE transport | SimpleBLE → BlueZ + D-Bus | SimpleBLE → CoreBluetooth |
+| BLE transport | Native BlueZ D-Bus (`bt_ble_linux.cpp`) | Native CoreBluetooth (`bt_ble_macos.mm`) |
 | Classic BT transport | BlueZ RFCOMM socket (`AF_BLUETOOTH`) | IOBluetooth RFCOMM (`bt_rfcomm_macos.mm`) |
 | BT scan | HCI inquiry (`hci_inquiry`) | `IOBluetoothDeviceInquiry` |
 | BT inspect (SDP) | BlueZ SDP API (`sdp_connect`) | `performSDPQuery` + `services` |
@@ -2967,7 +2949,8 @@ the bridge automatically attempts to reconnect:
 
 ### Notes
 
-- `vendor/simpleble` is excluded from git (`.gitignore`).  `make` clones and builds it automatically.
+- BLE uses native platform APIs — no external dependencies. Linux uses BlueZ via D-Bus (`libdbus`), macOS uses CoreBluetooth (system framework).
+- All transports now provide a real `read_fd()` (pipe fd) for unified `select()` I/O.
 - `make install` / `make uninstall` handle both `bt_kiss_bridge` and the `ble_kiss_bridge` backward-compat symlink.
 - The TCP server uses a dual-stack IPv6 socket (`IPV6_V6ONLY=0`) with automatic IPv4-only fallback.
 

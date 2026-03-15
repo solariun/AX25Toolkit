@@ -53,23 +53,12 @@ LIB_OBJ   = ax25lib.o
 BASIC_SRC = basic.cpp
 BASIC_OBJ = basic.o
 
-# ── SimpleBLE (vendor build) ──────────────────────────────────────────────────
-SIMPLEBLE_DIR = vendor/simpleble
-# Use hardcoded paths — SimpleBLE's repo structure is stable.
-# $(shell find ...) would be evaluated at parse time, before the clone step,
-# making the variables empty on a clean CI checkout.
-#   simpleble/include      — public API headers
-#   build/export           — cmake-generated export.h  (created by cmake step)
-#   dependencies/external  — kvn and other external deps (in-tree submodule)
-SIMPLEBLE_INC = -isystem $(SIMPLEBLE_DIR)/simpleble/include \
-                -isystem $(SIMPLEBLE_DIR)/build/export \
-                -isystem $(SIMPLEBLE_DIR)/dependencies/external
-
+# ── Native BLE (BlueZ D-Bus on Linux, CoreBluetooth on macOS) ────────────────
 ifeq ($(UNAME), Linux)
     DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1 2>/dev/null)
     DBUS_LIBS   := $(shell pkg-config --libs   dbus-1 2>/dev/null || echo "-ldbus-1")
-    SIMPLEBLE_SYS = $(DBUS_LIBS) -lpthread
-    SIMPLEBLE_INC += $(DBUS_CFLAGS)
+    BLE_OBJ      = bt_ble_linux.o
+    BLE_SYS      = $(DBUS_LIBS) -lpthread
     BLUETOOTH_LIBS = -lbluetooth
     # ARM 32-bit needs libatomic for 64-bit atomic ops (e.g. std::atomic<uint64_t>)
     ifneq ($(filter arm%,$(shell uname -m)),)
@@ -77,22 +66,17 @@ ifeq ($(UNAME), Linux)
     endif
 else
     DBUS_CFLAGS :=
-    SIMPLEBLE_SYS = -framework CoreBluetooth -framework Foundation \
-                    -framework IOKit -framework IOBluetooth -lpthread
+    BLE_OBJ      = bt_ble_macos.o
+    BLE_SYS      = -framework CoreBluetooth -framework Foundation \
+                   -framework IOKit -framework IOBluetooth -lpthread
     BLUETOOTH_LIBS =
 endif
-
-NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
-
-# Canonical output path of the SimpleBLE static library (cmake default).
-# Used as a real-file target so ble-deps only builds once.
-BLE_LIB = $(SIMPLEBLE_DIR)/build/lib/libsimpleble.a
 
 # ── Targets ───────────────────────────────────────────────────────────────────
 PREFIX    ?= /usr/local
 BINDIR     = $(PREFIX)/bin
 
-.PHONY: all clean test install uninstall install-deps ble-deps
+.PHONY: all clean test install uninstall install-deps
 
 all: bbs ax25kiss ax25tnc basic_tool bt_kiss_bridge
 
@@ -122,21 +106,12 @@ test_ax25lib: test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) ax25lib.hpp basic.hpp ini
 test: test_ax25lib
 	./test_ax25lib --gtest_color=yes
 
-# ble-deps: phony convenience alias — the real work is the library file target.
-ble-deps: $(BLE_LIB)
+# ── Native BLE object compilation ─────────────────────────────────────────────
+bt_ble_linux.o: bt_ble_linux.cpp bt_ble_native.h
+	$(CXX) -std=c++17 -O2 -Wall -Wextra $(DBUS_CFLAGS) -c -o $@ $<
 
-# Build SimpleBLE from the vendored submodule.
-# Source is always available after: git submodule update --init --recursive
-# Library is rebuilt only when the .a file is absent.
-$(BLE_LIB):
-	@echo "Building SimpleBLE (static)..."
-	cmake -S $(SIMPLEBLE_DIR)/simpleble \
-	      -B $(SIMPLEBLE_DIR)/build \
-	      -DCMAKE_BUILD_TYPE=Release \
-	      -DSIMPLEBLE_BUILD_SHARED_LIBS=OFF \
-	      -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-	cmake --build $(SIMPLEBLE_DIR)/build --config Release -j$(NPROC)
-	@echo "SimpleBLE ready."
+bt_ble_macos.o: bt_ble_macos.mm bt_ble_native.h
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -fobjc-arc -c -o $@ $<
 
 # ── macOS: Classic BT via IOBluetooth (Objective-C++ .mm) ────────────────────
 ifneq ($(UNAME), Linux)
@@ -148,11 +123,10 @@ endif
 bt_rfcomm_macos.o: bt_rfcomm_macos.mm bt_rfcomm_macos.h
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -fobjc-arc -c -o $@ $<
 
-bt_kiss_bridge: bt_kiss_bridge.cpp $(BLE_LIB) $(BT_MACOS_OBJ)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra \
-	    $(SIMPLEBLE_INC) \
-	    -o $@ bt_kiss_bridge.cpp $(BT_MACOS_OBJ) \
-	    $(BLE_LIB) $(SIMPLEBLE_SYS) $(BLUETOOTH_LIBS)
+bt_kiss_bridge: bt_kiss_bridge.cpp $(BLE_OBJ) $(BT_MACOS_OBJ)
+	$(CXX) -std=c++17 -O2 -Wall -Wextra $(DBUS_CFLAGS) \
+	    -o $@ bt_kiss_bridge.cpp $(BLE_OBJ) $(BT_MACOS_OBJ) \
+	    $(BLE_SYS) $(BLUETOOTH_LIBS)
 	@echo "Built: bt_kiss_bridge"
 
 # Backward-compatible alias: ble_kiss_bridge -> bt_kiss_bridge
@@ -161,7 +135,7 @@ ble_kiss_bridge: bt_kiss_bridge
 	@echo "Created symlink: ble_kiss_bridge -> bt_kiss_bridge"
 
 clean:
-	rm -f $(LIB_OBJ) $(BASIC_OBJ) bbs ax25kiss ax25tnc basic_tool test_ax25lib bt_kiss_bridge ble_kiss_bridge bt_rfcomm_macos.o
+	rm -f $(LIB_OBJ) $(BASIC_OBJ) bbs ax25kiss ax25tnc basic_tool test_ax25lib bt_kiss_bridge ble_kiss_bridge bt_rfcomm_macos.o bt_ble_linux.o bt_ble_macos.o
 
 # ── Install / Uninstall ───────────────────────────────────────────────────────
 # Installs all built binaries to $(PREFIX)/bin  (default: /usr/local/bin).
@@ -179,7 +153,7 @@ install:
 	    ln -sf bt_kiss_bridge $(BINDIR)/ble_kiss_bridge; \
 	    echo "  installed: $(BINDIR)/bt_kiss_bridge (+ ble_kiss_bridge symlink)"; \
 	else \
-	    echo "  skipped  : bt_kiss_bridge (not built — run: make ble-deps && make bt_kiss_bridge)"; \
+	    echo "  skipped  : bt_kiss_bridge (not built — run: make bt_kiss_bridge)"; \
 	fi
 	@echo "Done.  Binaries in $(BINDIR):"
 	@echo "  bbs  ax25kiss  ax25tnc  basic_tool  bt_kiss_bridge"
@@ -196,12 +170,12 @@ uninstall:
 
 install-deps:
 	@echo "Install dependencies:"
-	@echo "  macOS  : brew install googletest sqlite cmake"
-	@echo "  Ubuntu : sudo apt-get install libgtest-dev libsqlite3-dev cmake libdbus-1-dev"
-	@echo "  Fedora : sudo dnf install gtest-devel sqlite-devel cmake dbus-devel"
+	@echo "  macOS  : brew install googletest sqlite"
+	@echo "  Ubuntu : sudo apt-get install libgtest-dev libsqlite3-dev libdbus-1-dev libbluetooth-dev"
+	@echo "  Fedora : sudo dnf install gtest-devel sqlite-devel dbus-devel bluez-libs-devel"
 	@echo ""
 	@echo "BT/BLE bridge (bt_kiss_bridge):"
-	@echo "  All platforms : cmake required (see above)"
-	@echo "  Linux only    : libdbus-1-dev (BlueZ backend)"
-	@echo "  Linux (BT)    : libbluetooth-dev (Classic Bluetooth RFCOMM)"
-	@echo "  Then run      : make ble-deps && make bt_kiss_bridge"
+	@echo "  Linux  : libdbus-1-dev (BLE via BlueZ D-Bus)"
+	@echo "  Linux  : libbluetooth-dev (Classic Bluetooth RFCOMM)"
+	@echo "  macOS  : no extra deps (CoreBluetooth + IOBluetooth are system frameworks)"
+	@echo "  Build  : make bt_kiss_bridge"
