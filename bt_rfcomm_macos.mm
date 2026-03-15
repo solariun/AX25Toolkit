@@ -147,17 +147,39 @@ struct BtMacosHandle {
 
 @end
 
-// Perform SDP query with run loop to ensure we wait for completion
-static bool perform_sdp_query(IOBluetoothDevice* device, double timeout_s = 15.0) {
+// Perform SDP query with run loop to ensure we wait for completion.
+// On macOS, SDP queries require an active baseband connection.
+// We open one explicitly, run the SDP query, and optionally keep it.
+static bool perform_sdp_query(IOBluetoothDevice* device,
+                              double timeout_s = 15.0,
+                              bool keep_connection = false)
+{
+    // 1. Establish baseband connection (needed for SDP on non-paired devices)
+    bool we_opened = false;
+    if (![device isConnected]) {
+        std::cout << "  Opening baseband connection...\n";
+        std::cout.flush();
+        IOReturn cret = [device openConnection];
+        if (cret != kIOReturnSuccess) {
+            std::cerr << "  Cannot open connection to device: 0x"
+                      << std::hex << cret << std::dec << "\n"
+                      << "  Make sure the device is discoverable or paired.\n";
+            return false;
+        }
+        we_opened = true;
+    }
+
+    // 2. Perform SDP query with delegate
     BtSdpQueryDelegate* delegate = [[BtSdpQueryDelegate alloc] init];
     IOReturn ret = [device performSDPQuery:delegate];
     if (ret != kIOReturnSuccess) {
         std::cerr << "  SDP query initiation failed: 0x"
                   << std::hex << ret << std::dec << "\n";
+        if (we_opened && !keep_connection) [device closeConnection];
         return false;
     }
 
-    // Spin run loop until the delegate signals completion
+    // 3. Spin run loop until the delegate signals completion
     NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_s];
     while (![delegate isDone] &&
            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
@@ -165,22 +187,30 @@ static bool perform_sdp_query(IOBluetoothDevice* device, double timeout_s = 15.0
         if ([[NSDate date] compare:deadline] != NSOrderedAscending) break;
     }
 
+    bool ok = true;
     if (![delegate isDone]) {
-        std::cerr << "  SDP query timed out.\n";
-        return false;
-    }
-    if ([delegate status] != kIOReturnSuccess) {
+        std::cerr << "  SDP query timed out (" << (int)timeout_s << "s).\n";
+        ok = false;
+    } else if ([delegate status] != kIOReturnSuccess) {
         std::cerr << "  SDP query failed: 0x"
                   << std::hex << [delegate status] << std::dec << "\n";
-        return false;
+        ok = false;
     }
-    return true;
+
+    // 4. Close the baseband connection unless caller wants to keep it
+    //    (e.g. bt_macos_connect will reuse it for RFCOMM)
+    if (we_opened && !keep_connection) {
+        [device closeConnection];
+    }
+
+    return ok;
 }
 
 // ─── SDP helper: find SPP RFCOMM channel ────────────────────────────────────
 
-static int sdp_find_spp_channel(IOBluetoothDevice* device) {
-    if (!perform_sdp_query(device)) return -1;
+static int sdp_find_spp_channel(IOBluetoothDevice* device,
+                                bool keep_connection = false) {
+    if (!perform_sdp_query(device, 15.0, keep_connection)) return -1;
 
     // SPP UUID: 00001101-0000-1000-8000-00805F9B34FB
     IOBluetoothSDPUUID* sppUUID =
@@ -217,7 +247,7 @@ extern "C" bt_macos_handle_t bt_macos_connect(const char* address, int channel) 
         if (ch == 0) {
             std::cout << "  SDP lookup for SPP on " << address << "...\n";
             std::cout.flush();
-            ch = sdp_find_spp_channel(device);
+            ch = sdp_find_spp_channel(device, true /* keep_connection */);
             if (ch < 0) {
                 std::cerr << "  SDP: no SPP service found.  Use --channel to specify manually.\n";
                 return nullptr;
