@@ -117,15 +117,70 @@ struct BtMacosHandle {
 
 @end
 
+// ─── SDP Query Delegate (blocks until query completes) ──────────────────────
+
+@interface BtSdpQueryDelegate : NSObject
+{
+    BOOL _done;
+    IOReturn _status;
+}
+@property (nonatomic, readonly) BOOL isDone;
+@property (nonatomic, readonly) IOReturn status;
+@end
+
+@implementation BtSdpQueryDelegate
+
+- (instancetype)init {
+    self = [super init];
+    if (self) { _done = NO; _status = kIOReturnSuccess; }
+    return self;
+}
+
+- (BOOL)isDone { return _done; }
+- (IOReturn)status { return _status; }
+
+- (void)sdpQueryComplete:(IOBluetoothDevice*)device status:(IOReturn)status {
+    (void)device;
+    _status = status;
+    _done = YES;
+}
+
+@end
+
+// Perform SDP query with run loop to ensure we wait for completion
+static bool perform_sdp_query(IOBluetoothDevice* device, double timeout_s = 15.0) {
+    BtSdpQueryDelegate* delegate = [[BtSdpQueryDelegate alloc] init];
+    IOReturn ret = [device performSDPQuery:delegate];
+    if (ret != kIOReturnSuccess) {
+        std::cerr << "  SDP query initiation failed: 0x"
+                  << std::hex << ret << std::dec << "\n";
+        return false;
+    }
+
+    // Spin run loop until the delegate signals completion
+    NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_s];
+    while (![delegate isDone] &&
+           [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                    beforeDate:deadline]) {
+        if ([[NSDate date] compare:deadline] != NSOrderedAscending) break;
+    }
+
+    if (![delegate isDone]) {
+        std::cerr << "  SDP query timed out.\n";
+        return false;
+    }
+    if ([delegate status] != kIOReturnSuccess) {
+        std::cerr << "  SDP query failed: 0x"
+                  << std::hex << [delegate status] << std::dec << "\n";
+        return false;
+    }
+    return true;
+}
+
 // ─── SDP helper: find SPP RFCOMM channel ────────────────────────────────────
 
 static int sdp_find_spp_channel(IOBluetoothDevice* device) {
-    // Perform SDP query (blocks briefly)
-    IOReturn ret = [device performSDPQuery:nil];
-    if (ret != kIOReturnSuccess) {
-        std::cerr << "  SDP query failed: 0x" << std::hex << ret << std::dec << "\n";
-        return -1;
-    }
+    if (!perform_sdp_query(device)) return -1;
 
     // SPP UUID: 00001101-0000-1000-8000-00805F9B34FB
     IOBluetoothSDPUUID* sppUUID =
@@ -135,7 +190,6 @@ static int sdp_find_spp_channel(IOBluetoothDevice* device) {
     if (!services) return -1;
 
     for (IOBluetoothSDPServiceRecord* record in services) {
-        // Check if this service matches SPP
         if ([record hasServiceFromArray:@[sppUUID]]) {
             BluetoothRFCOMMChannelID channelID = 0;
             if ([record getRFCOMMChannelID:&channelID] == kIOReturnSuccess) {
@@ -382,10 +436,7 @@ extern "C" void bt_macos_inspect(const char* address) {
         }
 
         std::cout << "Querying SDP on " << address << "...\n";
-        IOReturn ret = [device performSDPQuery:nil];
-        if (ret != kIOReturnSuccess) {
-            std::cerr << "SDP query failed: 0x"
-                      << std::hex << ret << std::dec << "\n";
+        if (!perform_sdp_query(device)) {
             return;
         }
 

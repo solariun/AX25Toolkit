@@ -634,6 +634,28 @@ class BleTransport : public RadioTransport {
     using SteadyClock = std::chrono::steady_clock;
     std::atomic<SteadyClock::time_point> last_write_{SteadyClock::now()};
 
+    // Resolved UUIDs (from config or auto-detected)
+    std::string auto_service_, auto_write_, auto_read_;
+
+    // Auto-detect GATT UUIDs (same logic as do_ble_inspect)
+    void auto_detect_uuids() {
+        if (!peripheral_) return;
+        for (auto& svc : peripheral_->services()) {
+            for (auto& chr : svc.characteristics()) {
+                if (auto_write_.empty() &&
+                    (chr.can_write_command() || chr.can_write_request())) {
+                    auto_write_ = chr.uuid();
+                    if (auto_service_.empty()) auto_service_ = svc.uuid();
+                }
+                if (auto_read_.empty() &&
+                    (chr.can_notify() || chr.can_indicate())) {
+                    auto_read_ = chr.uuid();
+                    if (auto_service_.empty()) auto_service_ = svc.uuid();
+                }
+            }
+        }
+    }
+
 public:
     explicit BleTransport(const BridgeConfig& cfg) : cfg_(cfg) {}
     ~BleTransport() override { disconnect(); }
@@ -673,6 +695,11 @@ public:
         disconnected_ = false;
         tx_stop_ = false;
 
+        // Initialize resolved UUIDs from config (may be empty for auto-detect)
+        auto_service_ = cfg_.service_uuid;
+        auto_write_   = cfg_.write_uuid;
+        auto_read_    = cfg_.read_uuid;
+
         // Find adapter
         adapter_ = get_adapter();
         if (!adapter_) {
@@ -694,12 +721,30 @@ public:
             return false;
         }
 
+        // Auto-detect UUIDs if not specified
+        if (auto_service_.empty() || auto_write_.empty() || auto_read_.empty()) {
+            auto_detect_uuids();
+            if (auto_service_.empty() || auto_write_.empty() || auto_read_.empty()) {
+                std::cerr << "  Cannot auto-detect BLE UUIDs.  Use --service, --write, --read.\n";
+                try { peripheral_->disconnect(); } catch (...) {}
+                return false;
+            }
+            std::cout << "  Auto-detected UUIDs:\n"
+                      << "    service: " << auto_service_ << "\n"
+                      << "    write  : " << auto_write_   << "\n"
+                      << "    read   : " << auto_read_    << "\n";
+        }
+
+        const std::string& svc_uuid   = auto_service_;
+        const std::string& write_uuid = auto_write_;
+        const std::string& read_uuid  = auto_read_;
+
         // Capability check
         bool can_wwr = false, can_wr = false;
         for (auto& svc : peripheral_->services()) {
-            if (lower(svc.uuid()) != lower(cfg_.service_uuid)) continue;
+            if (lower(svc.uuid()) != lower(svc_uuid)) continue;
             for (auto& chr : svc.characteristics()) {
-                if (lower(chr.uuid()) != lower(cfg_.write_uuid)) continue;
+                if (lower(chr.uuid()) != lower(write_uuid)) continue;
                 can_wwr = chr.can_write_command();
                 can_wr  = chr.can_write_request();
             }
@@ -729,7 +774,7 @@ public:
         });
 
         // Notify subscription
-        peripheral_->notify(cfg_.service_uuid, cfg_.read_uuid,
+        peripheral_->notify(svc_uuid, read_uuid,
             [this](SimpleBLE::ByteArray raw) {
                 if (on_receive_) {
                     on_receive_(raw.data(), raw.size());
@@ -754,9 +799,9 @@ public:
                         int clen = std::min(chunk_size_, (int)pkt.size() - i);
                         SimpleBLE::ByteArray chunk(pkt.data() + i, pkt.data() + i + clen);
                         if (use_response_)
-                            peripheral_->write_request(cfg_.service_uuid, cfg_.write_uuid, chunk);
+                            peripheral_->write_request(auto_service_, auto_write_, chunk);
                         else
-                            peripheral_->write_command(cfg_.service_uuid, cfg_.write_uuid, chunk);
+                            peripheral_->write_command(auto_service_, auto_write_, chunk);
                     }
                     last_write_.store(SteadyClock::now());
                 } catch (const std::exception& e) {
@@ -782,7 +827,9 @@ public:
 
         // BLE cleanup
         if (peripheral_) {
-            try { peripheral_->unsubscribe(cfg_.service_uuid, cfg_.read_uuid); } catch (...) {}
+            if (!auto_service_.empty() && !auto_read_.empty()) {
+                try { peripheral_->unsubscribe(auto_service_, auto_read_); } catch (...) {}
+            }
             try { peripheral_->disconnect(); } catch (...) {}
         }
         peripheral_.reset();
@@ -1989,18 +2036,14 @@ int main(int argc, char* argv[]) {
         else if (cfg.bt_channel > 0)
             cfg.transport = BridgeConfig::BT;
         else {
-            std::cerr << "Cannot auto-detect transport.  Use --ble (with --service/--write/--read)\n"
-                         "or --bt (with optional --channel).\n";
+            std::cerr << "Cannot auto-detect transport.  Use --ble or --bt.\n";
             return 1;
         }
     }
 
     // Validate required options per transport
     if (cfg.transport == BridgeConfig::BLE) {
-        if (cfg.service_uuid.empty() || cfg.write_uuid.empty() || cfg.read_uuid.empty()) {
-            std::cerr << "--ble --device requires --service, --write, and --read\n";
-            return 1;
-        }
+        // UUIDs are optional — auto-detected at connect time if not specified
         BleTransport ble(cfg);
         do_bridge(cfg, ble);
     } else {
