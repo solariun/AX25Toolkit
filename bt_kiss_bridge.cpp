@@ -847,8 +847,7 @@ static int sdp_find_rfcomm_channel(const std::string& address) {
     bdaddr_t target;
     str2ba(address.c_str(), &target);
 
-    bdaddr_t any_addr;
-    bacpy(&any_addr, BDADDR_ANY);
+    bdaddr_t any_addr = {};
 
     sdp_session_t* session = sdp_connect(&any_addr, &target, SDP_RETRY_IF_BUSY);
     if (!session) {
@@ -1292,8 +1291,7 @@ static void do_bt_inspect(const std::string& address) {
     bdaddr_t target;
     str2ba(address.c_str(), &target);
 
-    bdaddr_t any_addr;
-    bacpy(&any_addr, BDADDR_ANY);
+    bdaddr_t any_addr = {};
 
     std::cout << "Connecting SDP to " << address << "...\n";
     sdp_session_t* session = sdp_connect(&any_addr, &target, SDP_RETRY_IF_BUSY);

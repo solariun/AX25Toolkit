@@ -232,12 +232,16 @@ else
     cd "${INSTALL_DIR}"
 fi
 
+info "Initialising submodules (SimpleBLE vendor)..."
+git submodule update --init --recursive
+success "Submodules ready"
+
 info "Building core binaries..."
 make -j"$(nproc)" bbs ax25kiss ax25tnc basic_tool
 success "Core binaries built"
 
-info "Building BT bridge (optional)..."
-if make -j"$(nproc)" ble-deps 2>/dev/null && make -j"$(nproc)" bt_kiss_bridge 2>/dev/null; then
+info "Building BT bridge..."
+if make -j"$(nproc)" ble-deps && make -j"$(nproc)" bt_kiss_bridge; then
     success "BT KISS bridge built"
     BLE_BRIDGE_BUILT=1
 else
@@ -297,8 +301,14 @@ success "Configuration written to ${BBS_INI}"
 # =============================================================================
 section "Creating systemd services"
 
-# ── 6a) BLE KISS bridge service (enabled, not started) ──────────────────────
-if [[ -n "${BLE_DEVICE}" ]] && [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
+# ── 6a) BLE KISS bridge service ──────────────────────────────────────────────
+if [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
+
+    # Use configured values or placeholders for later editing
+    _BLE_DEVICE="${BLE_DEVICE:-REPLACE_WITH_BLE_MAC}"
+    _BLE_SERVICE="${BLE_SERVICE:-REPLACE_WITH_SERVICE_UUID}"
+    _BLE_WRITE="${BLE_WRITE:-REPLACE_WITH_WRITE_UUID}"
+    _BLE_READ="${BLE_READ:-REPLACE_WITH_READ_UUID}"
 
     cat > "${SYSTEMD_DIR}/kissbbs-ble-bridge.service" <<SVCEOF
 [Unit]
@@ -310,10 +320,10 @@ Wants=bluetooth.target
 Type=simple
 User=${SERVICE_USER}
 ExecStart=${BIN_DIR}/bt_kiss_bridge \\
-    --device ${BLE_DEVICE} \\
-    --service ${BLE_SERVICE} \\
-    --write ${BLE_WRITE} \\
-    --read ${BLE_READ} \\
+    --device ${_BLE_DEVICE} \\
+    --service ${_BLE_SERVICE} \\
+    --write ${_BLE_WRITE} \\
+    --read ${_BLE_READ} \\
     --link ${KISS_PTY} \\
     --mtu ${BLE_MTU} \\
     --ble-ka ${BLE_KEEPALIVE} \\
@@ -328,21 +338,25 @@ WantedBy=multi-user.target
 SVCEOF
 
     systemctl daemon-reload
-    systemctl enable kissbbs-ble-bridge.service
-    success "kissbbs-ble-bridge.service — created and ENABLED (not started)"
+
+    if [[ -n "${BLE_DEVICE}" ]]; then
+        systemctl enable kissbbs-ble-bridge.service
+        success "kissbbs-ble-bridge.service — created and ENABLED (not started)"
+    else
+        info "kissbbs-ble-bridge.service — created (BLE not configured, edit service file to set device UUIDs)"
+    fi
 
 else
-    if [[ -z "${BLE_DEVICE}" ]]; then
-        info "BLE device not configured — skipping BLE bridge service"
-    else
-        warn "BLE bridge not built — skipping BLE bridge service"
-    fi
+    warn "BLE bridge not built — skipping BLE bridge service"
 fi
 
 # ── 6b) kissattach service (not enabled, not started) ───────────────────────
 KISS_AFTER="network.target"
 if [[ -n "${BLE_DEVICE}" ]] && [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
     KISS_AFTER="kissbbs-ble-bridge.service"
+elif [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
+    # BLE bridge installed but not configured — user can update After= later
+    KISS_AFTER="network.target"
 fi
 
 cat > "${SYSTEMD_DIR}/kissbbs-kissattach.service" <<SVCEOF
