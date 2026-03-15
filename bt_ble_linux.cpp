@@ -777,17 +777,17 @@ static DBusHandlerResult disconnect_filter(DBusConnection*,
 }
 
 // ── WriteValue helper ───────────────────────────────────────────────────────
+// Builds the D-Bus WriteValue message (shared between sync and async paths).
 
-static bool gatt_write_value(DBusConnection* conn, const std::string& char_path,
-                              const uint8_t* data, size_t len,
-                              bool with_response)
+static DBusMessage* build_write_msg(const std::string& char_path,
+                                      const uint8_t* data, size_t len,
+                                      bool with_response)
 {
     DBusMessage* msg = dbus_message_new_method_call(
         "org.bluez", char_path.c_str(),
         "org.bluez.GattCharacteristic1", "WriteValue");
-    if (!msg) return false;
+    if (!msg) return nullptr;
 
-    // Args: ay, a{sv}
     DBusMessageIter args, arr, dict, entry, variant;
     dbus_message_iter_init_append(msg, &args);
 
@@ -810,6 +810,16 @@ static bool gatt_write_value(DBusConnection* conn, const std::string& char_path,
         dbus_message_iter_close_container(&dict, &entry);
     }
     dbus_message_iter_close_container(&args, &dict);
+    return msg;
+}
+
+// Synchronous write — used during connect phase (no dispatch thread running).
+static bool gatt_write_value(DBusConnection* conn, const std::string& char_path,
+                              const uint8_t* data, size_t len,
+                              bool with_response)
+{
+    DBusMessage* msg = build_write_msg(char_path, data, len, with_response);
+    if (!msg) return false;
 
     DBusError err;
     dbus_error_init(&err);
@@ -820,6 +830,56 @@ static bool gatt_write_value(DBusConnection* conn, const std::string& char_path,
     if (reply) dbus_message_unref(reply);
     dbus_error_free(&err);
     return ok;
+}
+
+// Async write — safe to call while the dispatch thread is running.
+// Uses dbus_connection_send() + flush to avoid competing with the
+// dispatch thread for the D-Bus socket (send_with_reply_and_block can
+// deadlock or timeout when dispatch loop is running on the same conn).
+static bool gatt_write_value_async(DBusConnection* conn, const std::string& char_path,
+                                     const uint8_t* data, size_t len,
+                                     bool with_response)
+{
+    DBusMessage* msg = build_write_msg(char_path, data, len, with_response);
+    if (!msg) return false;
+
+    // For write-with-response we still need the reply to confirm delivery;
+    // use a pending-call callback so the dispatch thread handles it.
+    if (with_response) {
+        DBusPendingCall* pending = nullptr;
+        if (!dbus_connection_send_with_reply(conn, msg, &pending, 5000)) {
+            dbus_message_unref(msg);
+            return false;
+        }
+        dbus_message_unref(msg);
+        dbus_connection_flush(conn);
+
+        if (!pending) return false;
+
+        // Block until the dispatch thread delivers the reply
+        dbus_pending_call_block(pending);
+        DBusMessage* reply = dbus_pending_call_steal_reply(pending);
+        bool ok = reply && (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_METHOD_RETURN);
+        if (!ok && reply) {
+            const char* err_msg = nullptr;
+            dbus_message_get_args(reply, nullptr, DBUS_TYPE_STRING, &err_msg, DBUS_TYPE_INVALID);
+            if (err_msg)
+                std::cerr << "  BLE write error: " << err_msg << "\n";
+        }
+        if (reply) dbus_message_unref(reply);
+        dbus_pending_call_unref(pending);
+        return ok;
+    }
+
+    // Fire-and-forget for write-without-response: just send + flush.
+    dbus_message_set_no_reply(msg, TRUE);
+    dbus_uint32_t serial = 0;
+    bool sent = dbus_connection_send(conn, msg, &serial);
+    dbus_message_unref(msg);
+
+    if (sent) dbus_connection_flush(conn);
+
+    return sent;
 }
 
 // ── ReadValue helper ────────────────────────────────────────────────────────
@@ -1453,12 +1513,15 @@ void ble_write(ble_handle_t handle, const uint8_t* data, size_t len) {
     auto* h = static_cast<BleLinuxHandle*>(handle);
     if (!h->connected) return;
 
-    // Chunk and send
+    // Chunk and send (async — safe while dispatch thread is running)
     int cs = h->chunk_sz;
     for (size_t off = 0; off < len; off += (size_t)cs) {
         size_t clen = std::min((size_t)cs, len - off);
-        gatt_write_value(h->conn, h->write_char_path,
-                         data + off, clen, h->use_response);
+        if (!gatt_write_value_async(h->conn, h->write_char_path,
+                                     data + off, clen, h->use_response)) {
+            std::cerr << "  BLE write failed (chunk " << off << "+" << clen
+                      << " of " << len << ")\n";
+        }
     }
 }
 
