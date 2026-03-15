@@ -225,6 +225,13 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
     git fetch origin
     git checkout "${KISSBBS_BRANCH}"
     git pull origin "${KISSBBS_BRANCH}"
+
+    # Re-exec the updated install.sh if it changed (avoids running stale script)
+    UPDATED_SCRIPT="${INSTALL_DIR}/resources/install.sh"
+    if [[ -f "${UPDATED_SCRIPT}" ]] && ! cmp -s "$0" "${UPDATED_SCRIPT}"; then
+        info "install.sh updated — re-executing from repository..."
+        exec bash "${UPDATED_SCRIPT}" "$@"
+    fi
 else
     info "Cloning ${KISSBBS_REPO} → ${INSTALL_DIR}"
     git clone --branch "${KISSBBS_BRANCH}" "${KISSBBS_REPO}" "${INSTALL_DIR}"
