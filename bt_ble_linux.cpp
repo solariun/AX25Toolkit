@@ -1348,7 +1348,19 @@ ble_handle_t ble_connect(const char* address,
     if (r_path.empty()) r_path = find_char_path(services, s_uuid, r_uuid);
 
     if (w_path.empty() || r_path.empty()) {
-        std::cerr << "  Cannot find GATT characteristic paths.\n";
+        std::cerr << "  Cannot find GATT characteristic paths.\n"
+                  << "  Requested:  service=" << s_uuid
+                  << "  write=" << w_uuid << "  read=" << r_uuid << "\n"
+                  << "  Available GATT tree:\n";
+        for (auto& svc : services) {
+            std::cerr << "    service: " << svc.uuid << "\n";
+            for (auto& chr : svc.chars) {
+                std::cerr << "      char: " << chr.uuid
+                          << "  flags:";
+                for (auto& f : chr.flags) std::cerr << " " << f;
+                std::cerr << "\n";
+            }
+        }
         dbus_call_void(conn, "org.bluez", dev_path.c_str(),
                        "org.bluez.Device1", "Disconnect");
         dbus_connection_unref(conn);
