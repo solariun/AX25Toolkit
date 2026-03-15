@@ -71,6 +71,10 @@ ifeq ($(UNAME), Linux)
     SIMPLEBLE_SYS = $(DBUS_LIBS) -lpthread
     SIMPLEBLE_INC += $(DBUS_CFLAGS)
     BLUETOOTH_LIBS = -lbluetooth
+    # ARM 32-bit needs libatomic for 64-bit atomic ops (e.g. std::atomic<uint64_t>)
+    ifneq ($(filter arm%,$(shell uname -m)),)
+        BLUETOOTH_LIBS += -latomic
+    endif
 else
     DBUS_CFLAGS :=
     SIMPLEBLE_SYS = -framework CoreBluetooth -framework Foundation \
