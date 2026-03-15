@@ -167,13 +167,36 @@ jobs:
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
             pkg-config cmake \
-            libsqlite3-dev:armhf
+            libsqlite3-dev:armhf \
+            libdbus-1-dev:armhf libbluetooth-dev:armhf
 
       - name: Build core apps (cross)
         run: |
           make bbs ax25kiss ax25tnc basic_tool \
             CXX=arm-linux-gnueabihf-g++ \
             PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
+
+      - name: Build bt_kiss_bridge (cross)
+        continue-on-error: true
+        run: |
+          # Cross-compile SimpleBLE for armhf
+          cmake -S vendor/simpleble/simpleble \
+                -B vendor/simpleble/build-armhf \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DSIMPLEBLE_BUILD_SHARED_LIBS=OFF \
+                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+                -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
+                -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
+                -DCMAKE_FIND_ROOT_PATH=/usr/arm-linux-gnueabihf \
+                -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+                -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+                -DPKG_CONFIG_EXECUTABLE=/usr/bin/pkg-config
+          cmake --build vendor/simpleble/build-armhf \
+                --config Release -j$(nproc)
+          make bt_kiss_bridge \
+            CXX=arm-linux-gnueabihf-g++ \
+            PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig \
+            BLE_LIB=vendor/simpleble/build-armhf/lib/libsimpleble.a
 
       # Tests cannot run cross-compiled binaries — skip.
 
@@ -183,6 +206,8 @@ jobs:
           PKG="ax25-${REF}-linux-armhf"
           mkdir -p "$PKG"
           cp bbs ax25kiss ax25tnc basic_tool "$PKG"/
+          [ -f bt_kiss_bridge ] && cp bt_kiss_bridge "$PKG"/ || true
+          [ -f bt_kiss_bridge ] && ln -sf bt_kiss_bridge "$PKG"/ble_kiss_bridge || true
           cp README.md LICENSE "$PKG"/ 2>/dev/null || true
           tar czf "${PKG}.tar.gz" "$PKG"
 
