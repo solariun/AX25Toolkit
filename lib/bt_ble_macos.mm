@@ -834,6 +834,22 @@ bool ble_can_write_without_response(ble_handle_t handle) {
     return static_cast<BleMacosHandle*>(handle)->can_wwr;
 }
 
+void ble_wake(ble_handle_t handle) {
+    if (!handle) return;
+    auto* h = static_cast<BleMacosHandle*>(handle);
+    if (!h->connected || !h->peripheral) return;
+
+    // Read first readable characteristic to wake the GATT server
+    for (CBService* svc in h->peripheral.services) {
+        for (CBCharacteristic* chr in svc.characteristics) {
+            if (chr.properties & CBCharacteristicPropertyRead) {
+                [h->peripheral readValueForCharacteristic:chr];
+                return;
+            }
+        }
+    }
+}
+
 } // extern "C"
 
 #endif // __APPLE__

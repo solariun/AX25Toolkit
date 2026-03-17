@@ -544,6 +544,9 @@ public:
 
         if (!handle_) return false;
 
+        // Wake the BLE peripheral to ensure GATT server is active
+        ble_wake(handle_);
+
         if (cfg_.ble_ka_ms > 0)
             std::cout << "  BLE keep-alive: " << cfg_.ble_ka_ms / 1000
                       << "s  (KISS null writes)\n";

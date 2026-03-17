@@ -67,6 +67,11 @@ int ble_chunk_size(ble_handle_t h);
 // Whether the write characteristic supports write-without-response.
 bool ble_can_write_without_response(ble_handle_t h);
 
+// Wake a connected BLE peripheral by reading a standard GATT characteristic.
+// Call after connect to ensure the device's GATT server is active.
+// No-op if not connected.
+void ble_wake(ble_handle_t h);
+
 // ---------------------------------------------------------------------------
 // Discovery
 // ---------------------------------------------------------------------------

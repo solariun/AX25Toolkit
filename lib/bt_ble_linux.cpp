@@ -654,12 +654,20 @@ static std::string find_char_path(const std::vector<GattService>& services,
 // ── Connection handle ───────────────────────────────────────────────────────
 
 struct BleLinuxHandle {
-    DBusConnection* conn = nullptr;
+    // Two separate D-Bus connections to avoid thread-safety issues:
+    // - conn_dispatch: owned by dispatch thread for signal delivery (notifications)
+    // - conn_write: owned by caller thread for WriteValue and property queries
+    DBusConnection* conn_dispatch = nullptr;
+    DBusConnection* conn_write    = nullptr;
+
     std::string device_path;
     std::string adapter_path;
     std::string write_char_path;
     std::string read_char_path;
     std::string svc_uuid, write_uuid, read_uuid;
+
+    // All readable characteristic paths (for wake-up)
+    std::vector<std::string> readable_char_paths;
 
     int pipe_read  = -1;
     int pipe_write = -1;
@@ -840,57 +848,38 @@ static DBusMessage* build_write_msg(const std::string& char_path,
     return msg;
 }
 
-// Async write — safe to call while the dispatch thread is running.
-// Uses dbus_connection_send() + flush to avoid competing with the
-// dispatch thread for the D-Bus socket (send_with_reply_and_block can
-// deadlock or timeout when dispatch loop is running on the same conn).
+// Write via a dedicated conn_write connection (no dispatch thread on it).
+// Uses blocking send_with_reply_and_block — safe because conn_write is
+// never used by the dispatch thread.
 // Return: 1 = ok, 0 = permanent error, -1 = "In Progress" (transient, retry)
-static int gatt_write_once(DBusConnection* conn, const std::string& char_path,
+static int gatt_write_once(DBusConnection* conn_write, const std::string& char_path,
                             const uint8_t* data, size_t len,
                             bool with_response)
 {
     DBusMessage* msg = build_write_msg(char_path, data, len, with_response);
     if (!msg) return 0;
 
-    // For write-with-response we still need the reply to confirm delivery;
-    // use a pending-call so the dispatch thread handles it.
-    if (with_response) {
-        DBusPendingCall* pending = nullptr;
-        if (!dbus_connection_send_with_reply(conn, msg, &pending, 5000)) {
-            dbus_message_unref(msg);
-            return 0;
-        }
-        dbus_message_unref(msg);
-        dbus_connection_flush(conn);
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage* reply = dbus_connection_send_with_reply_and_block(
+                             conn_write, msg, 2000, &err);
+    dbus_message_unref(msg);
 
-        if (!pending) return 0;
-
-        // Block until the dispatch thread delivers the reply
-        dbus_pending_call_block(pending);
-        DBusMessage* reply = dbus_pending_call_steal_reply(pending);
-        bool ok = reply && (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_METHOD_RETURN);
-        int result = ok ? 1 : 0;
-        if (!ok && reply) {
-            // Check for "In Progress" — BlueZ returns this when a previous
-            // write-with-response hasn't been ACKed yet by the peripheral.
-            const char* err_name = dbus_message_get_error_name(reply);
-            if (err_name && std::string(err_name) == "org.bluez.Error.InProgress")
+    if (!reply || dbus_error_is_set(&err)) {
+        int result = 0;
+        if (dbus_error_is_set(&err)) {
+            if (std::string(err.name) == "org.bluez.Error.InProgress")
                 result = -1; // transient — caller should retry
+            else
+                std::cerr << "  BLE write error: " << err.message << "\n";
         }
+        dbus_error_free(&err);
         if (reply) dbus_message_unref(reply);
-        dbus_pending_call_unref(pending);
         return result;
     }
 
-    // Fire-and-forget for write-without-response: just send + flush.
-    dbus_message_set_no_reply(msg, TRUE);
-    dbus_uint32_t serial = 0;
-    bool sent = dbus_connection_send(conn, msg, &serial);
-    dbus_message_unref(msg);
-
-    if (sent) dbus_connection_flush(conn);
-
-    return sent ? 1 : 0;
+    dbus_message_unref(reply);
+    return 1;
 }
 
 // Wrapper with retry on "In Progress" (up to ~2s with exponential backoff).
@@ -1308,6 +1297,9 @@ ble_handle_t ble_connect(const char* address,
 {
     init_dbus_threads();
 
+    // Open two D-Bus connections: one for dispatch (signals/notifications),
+    // one for writes (blocking calls from caller thread).  This avoids the
+    // thread-safety issue of concurrent send + dispatch on the same conn.
     DBusError err;
     dbus_error_init(&err);
     DBusConnection* conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
@@ -1317,31 +1309,53 @@ ble_handle_t ble_connect(const char* address,
         return nullptr;
     }
 
-    std::string adapter = find_adapter(conn);
-    if (adapter.empty()) {
-        std::cerr << "  No Bluetooth adapter available.\n";
+    DBusError err2;
+    dbus_error_init(&err2);
+    DBusConnection* conn_write = dbus_bus_get_private(DBUS_BUS_SYSTEM, &err2);
+    if (!conn_write || dbus_error_is_set(&err2)) {
+        std::cerr << "  Cannot open second D-Bus connection for writes.\n";
+        dbus_error_free(&err2);
         dbus_connection_unref(conn);
         return nullptr;
     }
 
-    // Scan for device
-    set_discovery_filter_le(conn, adapter);
-    dbus_call_void(conn, "org.bluez", adapter.c_str(),
-                   "org.bluez.Adapter1", "StartDiscovery");
-
-    std::string dev_path;
-    auto deadline = std::chrono::steady_clock::now()
-                  + std::chrono::milliseconds((int)(timeout_s * 1000));
-    while (std::chrono::steady_clock::now() < deadline) {
-        dev_path = find_device_path(conn, address);
-        if (!dev_path.empty()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::string adapter = find_adapter(conn);
+    if (adapter.empty()) {
+        std::cerr << "  No Bluetooth adapter available.\n";
+        dbus_connection_close(conn_write);
+        dbus_connection_unref(conn_write);
+        dbus_connection_unref(conn);
+        return nullptr;
     }
-    dbus_call_void(conn, "org.bluez", adapter.c_str(),
-                   "org.bluez.Adapter1", "StopDiscovery");
+
+    // Try to find device among known/paired objects first (skip scan)
+    std::string dev_path = find_device_path(conn, address);
+    if (!dev_path.empty()) {
+        std::cout << "  Device " << address << " known to BlueZ (paired/cached).\n";
+        std::cout.flush();
+    } else {
+        // Only scan if device not already known
+        std::cout << "  Scanning for " << address << "...\n";
+        std::cout.flush();
+        set_discovery_filter_le(conn, adapter);
+        dbus_call_void(conn, "org.bluez", adapter.c_str(),
+                       "org.bluez.Adapter1", "StartDiscovery");
+
+        auto deadline = std::chrono::steady_clock::now()
+                      + std::chrono::milliseconds((int)(timeout_s * 1000));
+        while (std::chrono::steady_clock::now() < deadline) {
+            dev_path = find_device_path(conn, address);
+            if (!dev_path.empty()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        dbus_call_void(conn, "org.bluez", adapter.c_str(),
+                       "org.bluez.Adapter1", "StopDiscovery");
+    }
 
     if (dev_path.empty()) {
         std::cerr << "[BLE] Device " << address << " not found.\n";
+        dbus_connection_close(conn_write);
+        dbus_connection_unref(conn_write);
         dbus_connection_unref(conn);
         return nullptr;
     }
@@ -1349,25 +1363,29 @@ ble_handle_t ble_connect(const char* address,
     // Preventive disconnect — clear stale state if device was left connected
     if (dbus_get_bool_prop(conn, dev_path.c_str(),
                             "org.bluez.Device1", "Connected")) {
+        std::cout << "  Clearing stale connection...\n";
+        std::cout.flush();
         dbus_call_void(conn, "org.bluez", dev_path.c_str(),
                        "org.bluez.Device1", "Disconnect", 2000);
-        // Wait for Connected=false (up to 2s)
         auto dc_deadline = std::chrono::steady_clock::now()
                          + std::chrono::milliseconds(2000);
         while (std::chrono::steady_clock::now() < dc_deadline) {
             if (!dbus_get_bool_prop(conn, dev_path.c_str(),
                                      "org.bluez.Device1", "Connected"))
                 break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        // Settle time for BlueZ internal cleanup
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
     // Connect
+    std::cout << "  Connecting...\n";
+    std::cout.flush();
     if (!dbus_call_void(conn, "org.bluez", dev_path.c_str(),
                         "org.bluez.Device1", "Connect", 30000)) {
         std::cerr << "[BLE] Connect failed.\n";
+        dbus_connection_close(conn_write);
+        dbus_connection_unref(conn_write);
         dbus_connection_unref(conn);
         return nullptr;
     }
@@ -1376,6 +1394,8 @@ ble_handle_t ble_connect(const char* address,
         std::cerr << "[BLE] Services not resolved.\n";
         dbus_call_void(conn, "org.bluez", dev_path.c_str(),
                        "org.bluez.Device1", "Disconnect");
+        dbus_connection_close(conn_write);
+        dbus_connection_unref(conn_write);
         dbus_connection_unref(conn);
         return nullptr;
     }
@@ -1400,6 +1420,8 @@ ble_handle_t ble_connect(const char* address,
             std::cerr << "  Cannot auto-detect BLE UUIDs.  Use --service, --write, --read.\n";
             dbus_call_void(conn, "org.bluez", dev_path.c_str(),
                            "org.bluez.Device1", "Disconnect");
+            dbus_connection_close(conn_write);
+            dbus_connection_unref(conn_write);
             dbus_connection_unref(conn);
             return nullptr;
         }
@@ -1429,13 +1451,16 @@ ble_handle_t ble_connect(const char* address,
         }
         dbus_call_void(conn, "org.bluez", dev_path.c_str(),
                        "org.bluez.Device1", "Disconnect");
+        dbus_connection_close(conn_write);
+        dbus_connection_unref(conn_write);
         dbus_connection_unref(conn);
         return nullptr;
     }
 
     // Create handle
     auto* h = new BleLinuxHandle();
-    h->conn = conn;
+    h->conn_dispatch = conn;
+    h->conn_write = conn_write;
     h->device_path = dev_path;
     h->adapter_path = adapter;
     h->write_char_path = w_path;
@@ -1443,6 +1468,14 @@ ble_handle_t ble_connect(const char* address,
     h->svc_uuid = s_uuid;
     h->write_uuid = w_uuid;
     h->read_uuid = r_uuid;
+
+    // Collect all readable characteristic paths (for wake-up)
+    for (auto& svc : services) {
+        for (auto& chr : svc.chars) {
+            if (chr.can_read())
+                h->readable_char_paths.push_back(chr.path);
+        }
+    }
 
     // Check capabilities
     auto w_flags = dbus_get_string_array_prop(conn, w_path.c_str(),
@@ -1479,6 +1512,8 @@ ble_handle_t ble_connect(const char* address,
         std::cerr << "  pipe() failed: " << strerror(errno) << "\n";
         dbus_call_void(conn, "org.bluez", dev_path.c_str(),
                        "org.bluez.Device1", "Disconnect");
+        dbus_connection_close(conn_write);
+        dbus_connection_unref(conn_write);
         dbus_connection_unref(conn);
         delete h;
         return nullptr;
@@ -1493,7 +1528,7 @@ ble_handle_t ble_connect(const char* address,
     fl = ::fcntl(h->pipe_read, F_GETFL, 0);
     ::fcntl(h->pipe_read, F_SETFL, fl | O_NONBLOCK);
 
-    // Add signal match rules
+    // Add signal match rules on the dispatch connection
     std::string match1 = "type='signal',interface='org.freedesktop.DBus.Properties',"
                          "member='PropertiesChanged',path='" + r_path + "'";
     std::string match2 = "type='signal',interface='org.freedesktop.DBus.Properties',"
@@ -1501,7 +1536,7 @@ ble_handle_t ble_connect(const char* address,
     dbus_bus_add_match(conn, match1.c_str(), nullptr);
     dbus_bus_add_match(conn, match2.c_str(), nullptr);
 
-    // Add message filters
+    // Add message filters on dispatch connection
     dbus_connection_add_filter(conn, notify_filter, h, nullptr);
     dbus_connection_add_filter(conn, disconnect_filter, h, nullptr);
 
@@ -1512,12 +1547,17 @@ ble_handle_t ble_connect(const char* address,
 
     h->connected = true;
 
-    // Start dispatch thread
+    // Start dispatch thread (uses conn_dispatch only, 20ms for low latency)
     h->dispatch_thread = std::thread([h]() {
         while (!h->stop) {
-            dbus_connection_read_write_dispatch(h->conn, 100);
+            dbus_connection_read_write_dispatch(h->conn_dispatch, 20);
         }
     });
+
+    // Wake-up: read first readable characteristic to poke the GATT server
+    if (!h->readable_char_paths.empty()) {
+        gatt_read_value(conn_write, h->readable_char_paths.front());
+    }
 
     return static_cast<ble_handle_t>(h);
 }
@@ -1531,17 +1571,31 @@ void ble_disconnect(ble_handle_t handle) {
     h->stop = true;
     if (h->dispatch_thread.joinable()) h->dispatch_thread.join();
 
-    if (h->connected && h->conn) {
-        gatt_stop_notify(h->conn, h->read_char_path);
-        dbus_call_void(h->conn, "org.bluez", h->device_path.c_str(),
-                       "org.bluez.Device1", "Disconnect");
+    // Only call BlueZ disconnect if still connected
+    if (h->connected.load()) {
+        if (h->conn_dispatch)
+            gatt_stop_notify(h->conn_dispatch, h->read_char_path);
+
+        // Check BlueZ-level connected state before calling Disconnect
+        if (h->conn_write &&
+            dbus_get_bool_prop(h->conn_write, h->device_path.c_str(),
+                                "org.bluez.Device1", "Connected")) {
+            dbus_call_void(h->conn_write, "org.bluez", h->device_path.c_str(),
+                           "org.bluez.Device1", "Disconnect", 5000);
+        }
     }
 
-    // Remove filters
-    if (h->conn) {
-        dbus_connection_remove_filter(h->conn, notify_filter, h);
-        dbus_connection_remove_filter(h->conn, disconnect_filter, h);
-        dbus_connection_unref(h->conn);
+    // Remove filters from dispatch connection
+    if (h->conn_dispatch) {
+        dbus_connection_remove_filter(h->conn_dispatch, notify_filter, h);
+        dbus_connection_remove_filter(h->conn_dispatch, disconnect_filter, h);
+        dbus_connection_unref(h->conn_dispatch);
+    }
+
+    // Close private write connection
+    if (h->conn_write) {
+        dbus_connection_close(h->conn_write);
+        dbus_connection_unref(h->conn_write);
     }
 
     if (h->pipe_read >= 0)  ::close(h->pipe_read);
@@ -1573,11 +1627,11 @@ void ble_write(ble_handle_t handle, const uint8_t* data, size_t len) {
     auto* h = static_cast<BleLinuxHandle*>(handle);
     if (!h->connected) return;
 
-    // Chunk and send (async — safe while dispatch thread is running)
+    // Chunk and send via dedicated write connection (thread-safe)
     int cs = h->chunk_sz;
     for (size_t off = 0; off < len; off += (size_t)cs) {
         size_t clen = std::min((size_t)cs, len - off);
-        if (!gatt_write_value_async(h->conn, h->write_char_path,
+        if (!gatt_write_value_async(h->conn_write, h->write_char_path,
                                      data + off, clen, h->use_response)) {
             std::cerr << "  BLE write failed (chunk " << off << "+" << clen
                       << " of " << len << ")\n";
@@ -1600,6 +1654,22 @@ int ble_chunk_size(ble_handle_t handle) {
 bool ble_can_write_without_response(ble_handle_t handle) {
     if (!handle) return false;
     return static_cast<BleLinuxHandle*>(handle)->can_wwr;
+}
+
+void ble_wake(ble_handle_t handle) {
+    if (!handle) return;
+    auto* h = static_cast<BleLinuxHandle*>(handle);
+    if (!h->connected || !h->conn_write) return;
+
+    // Read the first readable characteristic to wake the GATT server
+    for (auto& path : h->readable_char_paths) {
+        auto val = gatt_read_value(h->conn_write, path);
+        if (!val.empty()) {
+            std::cout << "  BLE wake: read " << val.size() << " bytes from GATT.\n";
+            std::cout.flush();
+            return;
+        }
+    }
 }
 
 } // extern "C"
