@@ -248,8 +248,10 @@ Use the simulator to test protocol edge cases:
 ```bash
 # Start with restrictive parameters
 ./ax25sim -c W1SIM -w 1 --mtu 64 -t 1000
+```
 
-# Run the stress test
+```text
+# In the simulator console
 //b sim_stress
 
 # Adjust on the fly
@@ -265,7 +267,7 @@ Compare throughput with different window sizes and MTU values.
 
 The simulator provides real-time visibility into protocol activity:
 
-```bash
+```text
 //mon on              # show all frames (on by default)
 //hex on              # show hex dump of frame contents
 //s                   # show connection stats (frames TX/RX, bytes, retries)
