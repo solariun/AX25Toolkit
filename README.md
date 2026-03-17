@@ -7,7 +7,7 @@ protocol over KISS-mode TNCs.  Includes a full-featured BBS with INI config,
 a QBASIC-style scripting engine (functions, structs, DO/LOOP, SELECT CASE, SQLite · TCP · HTTP),
 a complete TNC terminal client (`ax25tnc`), an offline BASIC debugger (`basic_tool`),
 a PTY-based TNC simulator (`ax25sim`) for hardware-free testing,
-remote shell access, an interactive KISS terminal, and a 170-test GoogleTest suite.
+remote shell access, an interactive KISS terminal, and a comprehensive GoogleTest suite.
 
 ---
 
@@ -26,7 +26,7 @@ sudo apt-get install libgtest-dev libsqlite3-dev libdbus-1-dev libbluetooth-dev 
 
 # 3. Build everything + run tests
 make          # builds: bbs  ax25kiss  ax25tnc  basic_tool  bt_kiss_bridge  ax25sim
-make test     # runs 170 tests — must all pass
+make test     # runs the GoogleTest suite — all must pass
 ```
 
 ---
