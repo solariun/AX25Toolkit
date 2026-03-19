@@ -1502,15 +1502,15 @@ ble_handle_t ble_connect(const char* address,
     }
     if (mtu_val == 0) mtu_val = 23; // fallback
     h->mtu_val = mtu_val;
-    // BlueZ reports ATT MTU; usable payload = mtu_val - 3.
-    // --mtu N means "payload cap = N", not ATT MTU, so don't subtract 3 from it.
-    int auto_chunk = std::max(1, (int)mtu_val - 3);
-    h->chunk_sz = mtu_cap > 0
-        ? std::max(1, std::min(mtu_cap, auto_chunk))  // user cap, never exceed BLE
-        : auto_chunk;
+    // chunk_sz:
+    //   0     (no --mtu): single write per frame — let BlueZ handle fragmentation
+    //   N > 0 (--mtu N): split into N-byte chunks
+    h->chunk_sz = mtu_cap > 0 ? std::max(1, mtu_cap) : 0;
 
     std::cout << "  Connected.  MTU=" << mtu_val
-              << "  chunk=" << h->chunk_sz << "b"
+              << (h->chunk_sz > 0
+                    ? "  chunk=" + std::to_string(h->chunk_sz) + "b"
+                    : "  chunk=auto")
               << "  wwr=" << (h->can_wwr ? "yes" : "no")
               << "  response=" << (h->use_response ? "yes" : "no") << "\n";
     std::cout.flush();
@@ -1633,10 +1633,11 @@ void ble_write(ble_handle_t handle, const uint8_t* data, size_t len) {
     auto* h = static_cast<BleLinuxHandle*>(handle);
     if (!h->connected) return;
 
-    // Chunk and send via dedicated write connection (thread-safe)
-    int cs = h->chunk_sz;
-    for (size_t off = 0; off < len; off += (size_t)cs) {
-        size_t clen = std::min((size_t)cs, len - off);
+    // Send in chunks (--mtu N) or as a single write (no --mtu)
+    int cs = h->chunk_sz;           // 0 = no chunking
+    size_t step = (cs > 0) ? (size_t)cs : len;
+    for (size_t off = 0; off < len; off += step) {
+        size_t clen = std::min(step, len - off);
         if (!gatt_write_value_async(h->conn_write, h->write_char_path,
                                      data + off, clen, h->use_response)) {
             std::cerr << "  BLE write failed (chunk " << off << "+" << clen

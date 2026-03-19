@@ -452,6 +452,9 @@ struct RadioTransport {
     virtual void disconnect() = 0;
     virtual bool is_connected() const = 0;
     virtual void write(const uint8_t* data, size_t len) = 0;
+    // Block until all queued writes have been dispatched to the BLE/BT layer.
+    // Default: no-op (synchronous transports don't need it).
+    virtual void flush() {}
     virtual int  read_fd() const { return -1; }
     virtual void set_on_disconnect(std::function<void()>) {}
     virtual const char* label() const = 0;               // "BLE" or "BT"
@@ -470,6 +473,7 @@ struct BridgeConfig {
     std::string server_host;               // bind address (empty = all interfaces)
     bool   monitor          = false;       // print per-frame hex + AX.25 decode
     bool   show_keepalive   = false;       // show BLE keep-alive in monitor output
+    bool   tnc_init         = false;       // send KISS ON/RESTART/INTERFACE KISS/RESET + params on connect
     std::optional<bool> force_response;    // nullopt = auto-detect
 
     // Transport selection
@@ -487,12 +491,9 @@ class BleTransport : public RadioTransport {
     const BridgeConfig& cfg_;
     ble_handle_t handle_ = nullptr;
 
-    // Async write queue + writer thread
-    std::mutex                        tx_mx_;
-    std::condition_variable           tx_cv_;
-    std::deque<std::vector<uint8_t>>  tx_queue_;
-    std::atomic<bool>                 tx_stop_{false};
-    std::thread                       writer_thread_;
+    // Write mutex — prevents concurrent ble_write calls from main loop and
+    // keep-alive (both run on the bridge thread, but just in case).
+    std::mutex tx_mx_;
 
     // Callbacks
     std::function<void()> on_disconnect_;
@@ -533,8 +534,6 @@ public:
     }
 
     bool connect() override {
-        tx_stop_ = false;
-
         handle_ = ble_connect(
             cfg_.address.c_str(),
             cfg_.service_uuid.empty() ? nullptr : cfg_.service_uuid.c_str(),
@@ -553,42 +552,25 @@ public:
             std::cout << "  BLE keep-alive: " << cfg_.ble_ka_ms / 1000
                       << "s  (KISS null writes)\n";
         std::cout.flush();
-
-        // Start writer thread
         last_write_.store(SteadyClock::now());
-        writer_thread_ = std::thread([this]() {
-            while (!tx_stop_) {
-                std::vector<uint8_t> pkt;
-                {
-                    std::unique_lock<std::mutex> lk(tx_mx_);
-                    tx_cv_.wait_for(lk, std::chrono::milliseconds(50),
-                        [this]{ return !tx_queue_.empty() || tx_stop_.load(); });
-                    if (tx_queue_.empty()) continue;
-                    pkt = std::move(tx_queue_.front());
-                    tx_queue_.pop_front();
-                }
-                if (handle_) {
-                    ble_write(handle_, pkt.data(), pkt.size());
-                    last_write_.store(SteadyClock::now());
-                }
-            }
-        });
-
         return true;
     }
 
+    // Direct write — no queue, no buffering.
+    // ble_write() dispatches onto the CoreBluetooth queue internally (macOS)
+    // or calls D-Bus async (Linux), so this returns immediately.
     void write(const uint8_t* data, size_t len) override {
         std::lock_guard<std::mutex> lk(tx_mx_);
-        tx_queue_.emplace_back(data, data + len);
-        tx_cv_.notify_one();
+        if (handle_) {
+            ble_write(handle_, data, len);
+            last_write_.store(SteadyClock::now());
+        }
     }
 
-    void disconnect() override {
-        // Stop writer thread
-        tx_stop_ = true;
-        tx_cv_.notify_one();
-        if (writer_thread_.joinable()) writer_thread_.join();
+    // flush() is a no-op: write() dispatches directly with no local buffer.
+    void flush() override {}
 
+    void disconnect() override {
         if (handle_) {
             ble_disconnect(handle_);
             handle_ = nullptr;
@@ -1090,6 +1072,44 @@ static void test_hex_dump(const uint8_t* data, size_t len) {
     std::printf("\n");
 }
 
+// ── TNC/KISS initialisation sequence ─────────────────────────────────────────
+// Mirrors tnc_kiss_init() from ax25lib + KISS parameter frames.
+// Sends via the transport write path (BLE or BT), one command at a time.
+static void send_tnc_init(RadioTransport& transport, int txdelay_ms = 400,
+                           int persist = 63, int slottime_ms = 100) {
+    std::cout << "  [TNC-INIT] Sending text wake-up commands...\n";
+    const char* text_cmds[] = { "KISS ON\r", "RESTART\r", "INTERFACE KISS\r", "RESET\r" };
+    for (const char* cmd : text_cmds) {
+        std::cout << "  [TNC-INIT]   " << std::string(cmd, ::strlen(cmd) - 1) << "\n";
+        std::cout.flush();
+        transport.write(reinterpret_cast<const uint8_t*>(cmd), ::strlen(cmd));
+        transport.flush();                                      // wait until sent
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    std::cout << "  [TNC-INIT] Waiting 2s for KISS mode...\n";
+    std::cout.flush();
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    struct { const char* name; uint8_t cmd; uint8_t val; } params[] = {
+        { "TXDELAY",     0x01, (uint8_t)(txdelay_ms  / 10) },
+        { "PERSISTENCE", 0x02, (uint8_t) persist           },
+        { "SLOTTIME",    0x03, (uint8_t)(slottime_ms / 10) },
+    };
+    std::cout << "  [TNC-INIT] Sending KISS parameters...\n";
+    for (auto& p : params) {
+        std::cout << "  [TNC-INIT]   " << p.name
+                  << " = 0x" << std::hex << std::setw(2) << std::setfill('0')
+                  << (int)p.val << std::dec << "\n";
+        std::cout.flush();
+        uint8_t frame[] = { 0xC0, p.cmd, p.val, 0xC0 };
+        transport.write(frame, sizeof(frame));
+        transport.flush();                                      // wait until sent
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::cout << "  [TNC-INIT] Done.\n";
+    std::cout.flush();
+}
+
 static void do_test(const BridgeConfig& cfg, const std::string& call, double interval_s) {
     std::cout << hr('=') << "\n"
               << "  BLE KISS Test Mode\n"
@@ -1515,6 +1535,9 @@ static void do_bridge(const BridgeConfig& cfg, RadioTransport& transport) {
 
         if (!transport.connect()) continue; // retry
 
+        if (cfg.tnc_init)
+            send_tnc_init(transport);
+
         if (tcp_mode)
             std::cout << "  Mode       : TCP server only (no PTY)\n";
         std::cout << (cfg.monitor ? "  Monitor on.  Ctrl-C to stop.\n"
@@ -1622,21 +1645,23 @@ static void do_bridge(const BridgeConfig& cfg, RadioTransport& transport) {
                     std::string t = ts();
                     auto frames = tx_decoder.feed(tbuf, (size_t)tn);
                     if (frames.empty()) {
-                        std::cout << DIM() << "[" << t << "]  -> TCP  "
-                                  << tn << " bytes (buffering)\n"
+                        std::cout << DIM() << "[" << t << "]  -> " << transport.label()
+                                  << "  " << tn << " bytes (buffering)\n"
                                   << hex_dump(tbuf, (size_t)tn, "           ") << RESET();
                     }
                     for (auto& kf : frames) {
                         if (kf.type == 0 && !kf.payload.empty()) {
                             auto ax = decode_ax25(kf.payload.data(), kf.payload.size());
-                            std::cout << "[" << t << "]  -> TCP  " << ax.summary << "\n";
+                            std::cout << "[" << t << "]  -> " << transport.label()
+                                      << "  " << ax.summary << "\n";
                             print_frame_detail(ax, kf.payload.data(), kf.payload.size());
                         } else {
                             static constexpr const char* cmd_names[] =
                                 {"DATA","TXDELAY","P","SLOTTIME","TXTAIL",
                                  "FULLDUPLEX","SETHW","?","?","?","?","?","?","?","?","RETURN"};
-                            std::cout << DIM() << "[" << t << "]  -> TCP  KISS cmd="
-                                      << cmd_names[kf.type & 0xF] << " port=" << kf.port
+                            std::cout << DIM() << "[" << t << "]  -> " << transport.label()
+                                      << "  KISS cmd=" << cmd_names[kf.type & 0xF]
+                                      << " port=" << kf.port
                                       << "  " << kf.payload.size() << " bytes\n";
                             if (!kf.payload.empty())
                                 std::cout << hex_dump(kf.payload.data(), kf.payload.size(), "           ");
@@ -1729,21 +1754,23 @@ static void do_bridge(const BridgeConfig& cfg, RadioTransport& transport) {
                 std::string t = ts();
                 auto frames = tx_decoder.feed(buf, (size_t)nr);
                 if (frames.empty()) {
-                    std::cout << DIM() << "[" << t << "]  -> PTY  "
-                              << nr << " bytes (buffering)\n"
+                    std::cout << DIM() << "[" << t << "]  -> " << transport.label()
+                              << "  " << nr << " bytes (buffering)\n"
                               << hex_dump(buf, (size_t)nr, "           ") << RESET();
                 }
                 for (auto& kf : frames) {
                     if (kf.type == 0 && !kf.payload.empty()) {
                         auto ax = decode_ax25(kf.payload.data(), kf.payload.size());
-                        std::cout << "[" << t << "]  -> PTY  " << ax.summary << "\n";
+                        std::cout << "[" << t << "]  -> " << transport.label()
+                                  << "  " << ax.summary << "\n";
                         print_frame_detail(ax, kf.payload.data(), kf.payload.size());
                     } else {
                         static constexpr const char* cmd_names[] =
                             {"DATA","TXDELAY","P","SLOTTIME","TXTAIL",
                              "FULLDUPLEX","SETHW","?","?","?","?","?","?","?","?","RETURN"};
-                        std::cout << DIM() << "[" << t << "]  -> PTY  KISS cmd="
-                                  << cmd_names[kf.type & 0xF] << " port=" << kf.port
+                        std::cout << DIM() << "[" << t << "]  -> " << transport.label()
+                                  << "  KISS cmd=" << cmd_names[kf.type & 0xF]
+                                  << " port=" << kf.port
                                   << "  " << kf.payload.size() << " bytes\n";
                         if (!kf.payload.empty())
                             std::cout << hex_dump(kf.payload.data(), kf.payload.size(), "           ");
@@ -1834,6 +1861,8 @@ static void usage(const char* prog) {
         "  --server-host <host>   (TCP mode) bind to this address (default: all)\n"
         "  --mtu <bytes>          Max BLE chunk cap (default 517)\n"
         "  --monitor              Rich frame monitor: hexdump-C + AX.25 ctrl decode\n"
+        "  --tnc-init             Send KISS ON/RESTART/INTERFACE KISS/RESET then\n"
+        "                         KISS parameter frames (TXDELAY/PERSIST/SLOTTIME)\n"
         "                         Same format as ax25kiss/ax25tnc (dim detail lines)\n"
         "  --show-keepalive       Show BLE keep-alive messages in monitor output\n"
         "                         (hidden by default to reduce noise)\n\n"
@@ -1898,6 +1927,7 @@ int main(int argc, char* argv[]) {
         else if (a == "--bt")                               { cfg.transport    = BridgeConfig::BT; }
         else if (a == "--write-with-response")              { cfg.force_response = true; }
         else if (a == "--monitor")                          { cfg.monitor        = true; }
+        else if (a == "--tnc-init")                         { cfg.tnc_init       = true; }
         else if (a == "--show-keepalive")                   { cfg.show_keepalive = true; }
         else if (a == "--link"              && i+1 < argc) { cfg.link_path = argv[++i]; link_explicit = true; }
         else { std::cerr << "Unknown argument: " << a << "\n"; usage(argv[0]); return 1; }

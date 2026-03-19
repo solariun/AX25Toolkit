@@ -81,6 +81,31 @@ static std::string uuid_short_name(const std::string& uuid) {
     return "Unknown";
 }
 
+// ── NotifyWaiter — must be defined before BleDelegate @interface ─────────────
+
+struct NotifyWaiter {
+    std::mutex              mtx;
+    std::condition_variable cv;
+    bool                    done = false;
+
+    void signal() {
+        std::lock_guard<std::mutex> lk(mtx);
+        done = true;
+        cv.notify_one();
+    }
+
+    // Returns true if signaled within timeout, false on timeout.
+    bool wait(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lk(mtx);
+        return cv.wait_for(lk, timeout, [this]{ return done; });
+    }
+
+    void reset() {
+        std::lock_guard<std::mutex> lk(mtx);
+        done = false;
+    }
+};
+
 // ── Delegate ────────────────────────────────────────────────────────────────
 
 @interface BleDelegate : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate>
@@ -90,7 +115,7 @@ static std::string uuid_short_name(const std::string& uuid) {
 @property (nonatomic, assign) BOOL servicesResolved;
 @property (nonatomic, assign) BOOL didConnect;
 @property (nonatomic, assign) BOOL didFail;
-@property (nonatomic, assign) BOOL notifyDone;   // set by didUpdateNotificationState
+@property (nonatomic, assign) NotifyWaiter* notifyWaiter;  // C++ cv waiter
 @property (nonatomic, strong) NSMutableArray<CBPeripheral*>* found;
 @property (nonatomic, strong) CBPeripheral* target;
 @property (nonatomic, assign) int discoveredServices;
@@ -105,6 +130,7 @@ static std::string uuid_short_name(const std::string& uuid) {
         _found = [NSMutableArray new];
         _pipeWrite = -1;
         _connectedFlag = nullptr;
+        _notifyWaiter = nullptr;
     }
     return self;
 }
@@ -209,10 +235,9 @@ didUpdateNotificationStateForCharacteristic:(CBCharacteristic*)characteristic
              error:(NSError*)error
 {
     (void)peripheral; (void)characteristic; (void)error;
-    // Notify subscription confirmed — signal waiter in ble_connect
-    if (!_notifyDone) {
-        _notifyDone = YES;
-        if (_semaphore) dispatch_semaphore_signal(_semaphore);
+    // Notify subscription confirmed — wake C++ waiter in ble_connect
+    if (_notifyWaiter) {
+        _notifyWaiter->signal();
     }
 }
 
@@ -238,6 +263,7 @@ struct BleMacosHandle {
     bool can_wwr   = false;
 
     std::atomic<bool> connected{false};
+    NotifyWaiter      notify_waiter;   // for CCCD subscription confirmation
 };
 
 // ── Wait for CBManagerStatePoweredOn ────────────────────────────────────────
@@ -728,20 +754,20 @@ ble_handle_t ble_connect(const char* address,
         // maximumWriteValueLengthForType already returns the usable payload size
         // (CoreBluetooth subtracts the 3-byte ATT header internally).
         // mtu_val is stored as ATT MTU (payload + 3) for display only.
-        // chunk_sz is the actual per-write payload cap:
-        //   - auto: BLE-reported payload (maxWrite)
-        //   - --mtu N: user specifies payload directly, capped to BLE max
+        // chunk_sz:
+        //   0          (no --mtu): write entire frame in one call — let
+        //              CoreBluetooth / the radio handle fragmentation
+        //   N > 0      (--mtu N): split into N-byte chunks
         NSUInteger maxWrite = [target maximumWriteValueLengthForType:
             CBCharacteristicWriteWithoutResponse];
         h->mtu_val  = (int)(maxWrite + 3);      // ATT MTU (display)
         if (h->mtu_val < 23) h->mtu_val = 23;
-        int auto_chunk = (int)maxWrite;          // BLE-allowed payload
-        h->chunk_sz = mtu_cap > 0
-            ? std::max(1, std::min(mtu_cap, auto_chunk))   // user cap, never exceed BLE
-            : auto_chunk;
+        h->chunk_sz = mtu_cap > 0 ? std::max(1, mtu_cap) : 0;  // 0 = no chunking
 
         std::cout << "  Connected.  MTU=" << h->mtu_val
-                  << "  chunk=" << h->chunk_sz << "b"
+                  << (h->chunk_sz > 0
+                        ? "  chunk=" + std::to_string(h->chunk_sz) + "b"
+                        : "  chunk=auto")
                   << "  wwr=" << (h->can_wwr ? "yes" : "no")
                   << "  response=" << (h->use_response ? "yes" : "no") << "\n";
         std::cout.flush();
@@ -768,20 +794,15 @@ ble_handle_t ble_connect(const char* address,
         del.connectedFlag = &h->connected;
         h->connected = true;
 
-        // Subscribe to notifications and WAIT for confirmation (like SimpleBLE)
-        del.notifyDone = NO;
+        // Subscribe to notifications and WAIT for CCCD confirmation (like SimpleBLE).
+        // Uses C++ condition_variable — no polling, wakes immediately on callback.
+        h->notify_waiter.reset();
+        del.notifyWaiter = &h->notify_waiter;
         [target setNotifyValue:YES forCharacteristic:h->readChr];
-        // Poll up to 5s for didUpdateNotificationStateForCharacteristic
-        {
-            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (!del.notifyDone &&
-                   std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-            if (!del.notifyDone) {
-                std::cerr << "  [BLE] Warning: notify subscription timeout (proceeding anyway).\n";
-            }
+        if (!h->notify_waiter.wait(std::chrono::seconds(5))) {
+            std::cerr << "  [BLE] Warning: notify subscription timeout (proceeding anyway).\n";
         }
+        del.notifyWaiter = nullptr;
         // Settle: let radio transition into KISS data mode
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
@@ -838,9 +859,10 @@ void ble_write(ble_handle_t handle, const uint8_t* data, size_t len) {
         ? CBCharacteristicWriteWithResponse
         : CBCharacteristicWriteWithoutResponse;
 
-    int cs = h->chunk_sz;
-    for (size_t off = 0; off < len; off += (size_t)cs) {
-        size_t clen = std::min((size_t)cs, len - off);
+    int cs = h->chunk_sz;  // 0 = no chunking (single write)
+    size_t step = (cs > 0) ? (size_t)cs : len;
+    for (size_t off = 0; off < len; off += step) {
+        size_t clen = std::min(step, len - off);
         NSData* chunk = [NSData dataWithBytes:(data + off) length:clen];
         // Dispatch on CB queue — required by CoreBluetooth (same as SimpleBLE)
         dispatch_async(h->queue, ^{
