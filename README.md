@@ -478,6 +478,14 @@ and full AX.25 ARQ state machines.  Each caller gets an independent session.
 
 # Send a one-shot APRS beacon and exit
 ./bin/bbs -c W1BBS-1 --aprs "!2330.00S/04636.00W>KISSBBS on the air" /tmp/kiss
+
+# Or use ax25send for APRS position, message, and UI frames:
+./bin/ax25send -c W1BBS-1 /tmp/kiss --pos -23.5000,-46.6000 "KISSBBS on the air"
+./bin/ax25send -c W1BBS-1 /tmp/kiss --msg G2UGK "Hello from KISSBBS"
+./bin/ax25send -c W1BBS-1 /tmp/kiss --ui CQ "Net starts at 2100Z"
+
+# With digipeater path and repeat:
+./bin/ax25send -c W1BBS-1 -p WIDE1-1,WIDE2-1 /tmp/kiss --pos -23.50,-46.60 "Mobile" -n 5 -i 60
 ```
 
 Sample BBS session (from a remote caller's perspective):
