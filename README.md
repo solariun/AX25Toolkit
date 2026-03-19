@@ -186,32 +186,60 @@ radio station.
 
 ### Why KISSBBS?
 
+| Tool | Role |
+|------|------|
+| `bt_kiss_bridge` | Bridge BLE / Classic BT radios to a standard KISS PTY or TCP server |
+| `bbs` | Multi-connection AX.25 BBS with BASIC scripting, SQLite, and APRS |
+| `ax25tnc` | Full-featured interactive TNC terminal — connect, monitor, script |
+| `ax25kiss` | Lightweight standalone UI-frame terminal, no library dependency |
+| `bt_sniffer` | Transparent KISS proxy tap — observe traffic without interrupting it |
+| `ax25sim` | PTY-based TNC simulator for hardware-free development and testing |
+| `basic_tool` | Offline BASIC REPL and script debugger for BBS script development |
+
 - **`bt_kiss_bridge`** — Use inexpensive Bluetooth radios (BLE or Classic BT) as
   packet modems.  No expensive dedicated TNC hardware required; a handheld radio
-  like the Vero VR-N7600 or Kenwood TH-D75 connected via Bluetooth becomes your
-  station modem.  The bridge creates a virtual KISS PTY so every AX.25 tool on
-  Linux (kissattach, linpac, our BBS) can use it transparently.
+  like the Vero VR-N7600, GA-5WB, or Kenwood TH-D75 connected via Bluetooth
+  becomes your station modem.  The bridge creates a virtual KISS PTY so every
+  AX.25 tool on Linux (`kissattach`, `linpac`, our BBS) can use it transparently.
   See [§19 bt_kiss_bridge](#19-bt_kiss_bridge--bluetooth-kiss-bridge-ble--classic-bt).
+
 - **`bbs`** — A native multi-connection AX.25 BBS with INI config, scriptable
   via BASIC, SQLite database, APRS beacons, and per-connection state machines.
-  *Currently we also install **linpac** (a popular AX.25 terminal) as an
-  alternative; in future releases linpac will be replaced entirely by our BBS.*
+  *Currently we also install **linpac** as an alternative; in future releases
+  linpac will be replaced entirely by our BBS.*
   See [§13 BBS Example](#13-bbs-example) and [§14 INI Configuration](#14-ini-configuration).
-- **`ax25tnc`** — A standalone TNC terminal that can connect to remote stations
-  or accept incoming connections, working as a simple peer-to-peer link with
-  other HAMs.  Great for testing and casual QSOs.
+
+- **`ax25tnc`** — A full-featured interactive TNC terminal with four modes
+  (TNC interactive, connect, monitor, unproto).  Accepts incoming connections,
+  runs BASIC scripts on live sessions, and supports keep-alive timers.
+  Great for casual QSOs, automated BBS logins, and protocol testing.
   See [§17 ax25tnc](#17-ax25tnc--tnc-terminal-client).
+
+- **`ax25kiss`** — A lightweight, self-contained AX.25/KISS terminal that
+  sends and receives UI frames over a serial KISS TNC.  Single C++11 source
+  file, no library dependency — ideal for embedded targets, scripting, or
+  anywhere you need the smallest possible footprint.
+  See [§22 ax25kiss — Standalone AX.25/KISS Terminal](#22-ax25kiss--standalone-ax25kiss-terminal).
+
+- **`bt_sniffer`** — Transparent KISS proxy tap.  Inserts itself between
+  `bt_kiss_bridge` and any AX.25 client and decodes every KISS frame and
+  AX.25 header in real-time — without interrupting normal operation.
+  Essential for diagnosing BLE and TNC issues.
+  See [§23 bt_sniffer — KISS Proxy Tap](#23-bt_sniffer--kiss-proxy-tap).
+
 - **`ax25sim`** — A PTY-based TNC simulator that creates a virtual serial port
   at `/tmp/kiss_sim`.  Develop and test BBS scripts, protocol tuning, and
   connection handling entirely on your workstation — no TNC, no radio, no
   Bluetooth adapter.  Catch bugs before they hit the air.
   See [§2 Development Workflow](#2-development-workflow--best-practices) and
   [§21 ax25sim](#21-ax25sim--ax25-tnc-simulator).
+
 - **`basic_tool`** — Offline BASIC interpreter and REPL debugger.  Write and
   test BBS scripts without connecting to anything — line-by-line trace,
   variable overrides, and interactive inspection.  The fastest way to iterate
   on script logic.
   See [§20 basic_tool](#20-basic_tool--offline-basic-interpreter--repl-debugger).
+
 - **BASIC scripting** — Both `bbs` and `ax25tnc` can run BASIC scripts to
   automate welcome messages, menus, mail handling, and more.
   See [§15 BASIC Scripting](#15-basic-scripting) for the full language reference.
@@ -273,33 +301,310 @@ journalctl -u kissbbs-bbs -f
 
 ---
 
+## Tool Overview & Quick Reference
+
+This section gives a one-page map of every tool in the repository — what it
+does, when to use it, and a minimal working example.  Detailed documentation
+for each tool follows in its own numbered section.
+
+### At a glance
+
+```
+bt_kiss_bridge ──► PTY /tmp/kiss ──► ax25tnc   (interactive terminal)
+                                 └──► bbs        (multi-user BBS server)
+               └──► TCP :8001   ──► ax25tnc -c W1AW localhost:8001
+                                 └──► KISSet (macOS GUI client)
+
+bt_sniffer  ──  transparent tap between bridge and client (observe only)
+ax25sim     ──  virtual TNC for hardware-free development
+ax25kiss    ──  standalone UI-frame terminal (no lib, one file)
+basic_tool  ──  offline BASIC script debugger
+```
+
+---
+
+### `bt_kiss_bridge` — Bluetooth KISS Bridge
+
+Connects a BLE or Classic BT radio (VR-N76, VR-N7600, GA-5WB, TH-D75) to
+any AX.25 software via a PTY symlink (`/tmp/kiss`) or a TCP server.
+
+```bash
+# Scan for nearby BLE radios
+./bin/bt_kiss_bridge --scan --ble
+
+# Inspect GATT services of a specific radio (shows UUIDs and properties)
+./bin/bt_kiss_bridge --inspect "GA-5WB"
+
+# Bridge: BLE → PTY /tmp/kiss, with live frame monitor
+./bin/bt_kiss_bridge --ble --device "GA-5WB" --monitor
+
+# Bridge: BLE → TCP server (multi-client, e.g. for KISSet on macOS)
+./bin/bt_kiss_bridge --ble --device "VR-N76" --server-port 8100 --monitor
+
+# Bridge: Classic BT (Kenwood TH-D75, auto-detect RFCOMM channel via SDP)
+./bin/bt_kiss_bridge --bt --device 00:11:22:33:44:55 --monitor
+
+# Wake TNC mode on radios that need an explicit initialization sequence
+./bin/bt_kiss_bridge --ble --device "GA-5WB" --tnc-init --monitor
+```
+
+Full reference: [§19 bt_kiss_bridge](#19-bt_kiss_bridge--bluetooth-kiss-bridge-ble--classic-bt)
+
+---
+
+### `bbs` — AX.25 BBS Server
+
+Multi-connection BBS with BASIC scripting, SQLite database, APRS beacons,
+and full AX.25 ARQ state machines.  Each caller gets an independent session.
+
+```bash
+# Start BBS on serial TNC
+./bin/bbs -c W1BBS-1 /dev/ttyUSB0
+
+# Start BBS connected to bt_kiss_bridge PTY
+./bin/bbs -c W1BBS-1 /tmp/kiss
+
+# Start BBS from INI config file
+./bin/bbs -C bbs.ini
+
+# Send a one-shot APRS beacon and exit
+./bin/bbs -c W1BBS-1 --aprs "!2330.00S/04636.00W>KISSBBS on the air" /tmp/kiss
+```
+
+Sample BBS session (from a remote caller's perspective):
+```
+*** Connected to W1BBS-1 ***
+Welcome to KISSBBS!  Type H for help.
+> H
+H    This help
+U    List connected users
+BYE  Disconnect
+> BYE
+73 de W1BBS-1
+```
+
+Full reference: [§13 BBS Example](#13-bbs-example), [§14 INI Configuration](#14-ini-configuration)
+
+---
+
+### `ax25tnc` — TNC Terminal Client
+
+Interactive TNC terminal.  Default mode is a live command prompt where you
+can connect, disconnect, monitor, change callsign, and run BASIC scripts —
+all without restarting.
+
+```bash
+# Start interactive TNC terminal on serial device
+./bin/ax25tnc -c W1AW /dev/ttyUSB0
+
+# Connect to BBS via bt_kiss_bridge PTY
+./bin/ax25tnc -c W1AW -r W1BBS-1 /tmp/kiss
+
+# Connect to BBS via TCP (bt_kiss_bridge --server-port or remote host)
+./bin/ax25tnc -c W1AW -r W1BBS-1 localhost:8100
+
+# Passive monitor — decode and print every frame, no TX
+./bin/ax25tnc -c W1AW -m monitor /tmp/kiss
+
+# Unproto mode — send UI frames (like APRS beacons)
+./bin/ax25tnc -c W1AW -m unproto -d CQ /tmp/kiss
+
+# Auto-run a BASIC script after connecting
+./bin/ax25tnc -c W1AW -r W1BBS-1 -s login.bas /tmp/kiss
+```
+
+TNC command prompt reference (type `HELP` for full list):
+```
+[W1AW cmd]> C W1BBS-1          # connect
+[W1AW cmd]> MON ON             # enable frame monitor
+[W1AW cmd]> MYC W1AW-5        # change callsign at runtime
+[W1AW cmd]> QUIT               # exit
+```
+
+While connected, type `~.` to disconnect and `~s` for link statistics.
+
+Full reference: [§17 ax25tnc](#17-ax25tnc--tnc-terminal-client)
+
+---
+
+### `ax25kiss` — Standalone AX.25/KISS Terminal
+
+Lightweight UI-frame terminal.  Single self-contained C++11 source file —
+no `ax25lib` dependency.  Sends and receives AX.25 UI frames over a serial
+KISS TNC.  Useful for scripting, embedded targets, or when you only need
+connectionless (unproto) operation.
+
+```bash
+# Monitor all UI frames on a serial TNC
+./bin/ax25kiss -c W1AW /dev/ttyUSB0
+
+# Monitor via bt_kiss_bridge PTY
+./bin/ax25kiss -c W1AW /tmp/kiss
+
+# Type a line → sent as UI frame to destination (default CQ)
+# Change settings at runtime with /commands:
+#   /dest APRS       change destination
+#   /mycall W1AW-2   change callsign
+#   /txdelay 400     set TX delay ms
+#   /status          show current settings
+#   /help            full command list
+```
+
+Key differences from `ax25tnc`:
+
+| Feature | `ax25kiss` | `ax25tnc` |
+|---------|-----------|----------|
+| Frame type | UI (connectionless) only | UI + connected I-frames |
+| Library dependency | None (self-contained) | ax25lib |
+| AX.25 ARQ | No | Yes (Go-Back-N) |
+| BASIC scripting | No | Yes |
+| Binary size | Minimal | Full-featured |
+
+Full reference: [§22 ax25kiss](#22-ax25kiss--standalone-ax25kiss-terminal)
+
+---
+
+### `bt_sniffer` — KISS Proxy Tap
+
+Inserts itself transparently between `bt_kiss_bridge` and any AX.25 client.
+Both sides operate normally — `bt_sniffer` only observes, decoding every
+KISS frame and AX.25 header in real-time.
+
+```bash
+# Tap a PTY bridge
+# Terminal 1 — bridge (as usual)
+./bin/bt_kiss_bridge --ble --device "GA-5WB" --link /tmp/kiss
+
+# Terminal 2 — sniffer tap
+./bin/bt_sniffer /tmp/kiss --link /tmp/kiss-tap
+
+# Terminal 3 — client connects to tap instead of bridge directly
+./bin/ax25tnc -c W1AW /tmp/kiss-tap
+
+# Tap a TCP bridge
+./bin/bt_kiss_bridge --ble --device "GA-5WB" --server-port 8001
+./bin/bt_sniffer localhost:8001 --link /tmp/kiss-tap
+./bin/ax25tnc -c W1AW /tmp/kiss-tap
+```
+
+Sample output:
+```
+[14:30:01.234]  <- BRIDGE  23 bytes
+    00000000  c0 00 8e 64 aa 8e 96 40  62 40 40 40 40 40 e0  |...d...@b@@@@@.|
+    └─ AX.25: W1AW -> CQ  [UI]
+
+[14:30:02.111]  -> BRIDGE   4 bytes
+    00000000  c0 01 28 c0                                     |..(.|
+    └─ KISS ctrl: TXDELAY  val=40 (400 ms)
+```
+
+Full reference: [§23 bt_sniffer](#23-bt_sniffer--kiss-proxy-tap)
+
+---
+
+### `ax25sim` — AX.25 TNC Simulator
+
+PTY-based virtual TNC.  Creates `/tmp/kiss_sim` (configurable) so all tools
+can connect to it as if it were a real serial device — no radio, no
+Bluetooth adapter needed.  Has an interactive console with frame monitoring,
+BASIC script execution, and parameter tuning.
+
+```bash
+# Start simulator (callsign W1SIM)
+./bin/ax25sim -c W1SIM
+
+# In a second terminal — connect with ax25tnc
+./bin/ax25tnc -c W1AW -r W1SIM /tmp/kiss_sim
+
+# Or connect the full BBS
+./bin/bbs -c W1BBS-1 /tmp/kiss_sim
+```
+
+Simulator console commands (prefix `//`):
+```
+//s              show connection stats
+//mon on         enable frame monitor
+//hex on         hex dump of frame payload
+//c W1AW         initiate outgoing connection
+//b welcome      run welcome.bas script
+//win 5          set window size to 5
+//t1 5000        set T1 retransmit timer to 5 s
+```
+
+Full reference: [§21 ax25sim](#21-ax25sim--ax25-tnc-simulator)
+
+---
+
+### `basic_tool` — BASIC Script Debugger
+
+Offline interpreter for `.bas` BBS scripts.  Same engine as the BBS,
+but runs from the command line — no TNC, no connection needed.
+
+```bash
+# Run a script with default variables
+./bin/basic_tool welcome.bas
+
+# Override variables (simulate a specific caller)
+./bin/basic_tool -v callsign\$=W1ABC -v bbs_name\$=TestBBS welcome.bas
+
+# Line-by-line trace to stderr
+./bin/basic_tool --trace email.bas
+
+# Drop into interactive REPL after running
+./bin/basic_tool --repl welcome.bas
+
+# Pure REPL (no script)
+./bin/basic_tool
+```
+
+REPL usage:
+```
+BASIC> PRINT "Hello " + callsign$
+Hello N0CALL
+BASIC> 10 FOR i = 1 TO 3
+BASIC> 20   PRINT STR$(i)
+BASIC> 30 NEXT i
+BASIC> RUN
+1
+2
+3
+BASIC> SAVE /tmp/test.bas
+BASIC> QUIT
+```
+
+Full reference: [§20 basic_tool](#20-basic_tool--offline-basic-interpreter--repl-debugger)
+
+---
+
 ## Table of Contents
 
 0. [Quick Start](#quick-start)
 1. [Compatible Radios — Initial Setup](#compatible-radios--initial-setup)
 2. [Linux BBS Installation](#linux-bbs-installation--one-command-setup)
-3. [Development Workflow & Best Practices](#2-development-workflow--best-practices)
-4. [Protocol Background (see DESIGN.md)](DESIGN.md)
-5. [Architecture Overview (see DESIGN.md)](DESIGN.md)
-6. [Object Relationship Diagram (see DESIGN.md)](DESIGN.md)
-7. [UML Class Diagram (see DESIGN.md)](DESIGN.md)
-8. [AX.25 State Machine (see DESIGN.md)](DESIGN.md)
-9. [Connection Sequence Diagram (see DESIGN.md)](DESIGN.md)
-10. [Building](#9-building)
-11. [API Reference](#10-api-reference)
-12. [Usage Examples](#11-usage-examples)
-13. [Running Tests](#12-running-tests)
-14. [BBS Example](#13-bbs-example)
-15. [INI Configuration](#14-ini-configuration)
-16. [BASIC Scripting](#15-basic-scripting)
-17. [APRS Helpers (ax25::aprs)](#16-aprs-helpers-ax25aprs)
-18. [ax25tnc — TNC Terminal Client](#17-ax25tnc--tnc-terminal-client)
-19. [ble_kiss_monitor.py — BLE KISS Scanner & AX.25 Monitor](#18-ble_kiss_monitorpy--ble-kiss-scanner--ax25-monitor)
-20. [bt_kiss_bridge — Bluetooth KISS Bridge (BLE + Classic BT)](#19-bt_kiss_bridge--bluetooth-kiss-bridge-ble--classic-bt)
-    - [bt_sniffer — KISS proxy tap](#bt_sniffer--kiss-proxy-tap-all-platforms)
+3. [Tool Overview & Quick Reference](#tool-overview--quick-reference)
+4. [Development Workflow & Best Practices](#2-development-workflow--best-practices)
+5. [Protocol Background (see DESIGN.md)](DESIGN.md)
+6. [Architecture Overview (see DESIGN.md)](DESIGN.md)
+7. [Object Relationship Diagram (see DESIGN.md)](DESIGN.md)
+8. [UML Class Diagram (see DESIGN.md)](DESIGN.md)
+9. [AX.25 State Machine (see DESIGN.md)](DESIGN.md)
+10. [Connection Sequence Diagram (see DESIGN.md)](DESIGN.md)
+11. [Building](#9-building)
+12. [API Reference](#10-api-reference)
+13. [Usage Examples](#11-usage-examples)
+14. [Running Tests](#12-running-tests)
+15. [BBS Example](#13-bbs-example)
+16. [INI Configuration](#14-ini-configuration)
+17. [BASIC Scripting](#15-basic-scripting)
+18. [APRS Helpers (ax25::aprs)](#16-aprs-helpers-ax25aprs)
+19. [ax25tnc — TNC Terminal Client](#17-ax25tnc--tnc-terminal-client)
+20. [ble_kiss_monitor.py — BLE KISS Scanner & AX.25 Monitor](#18-ble_kiss_monitorpy--ble-kiss-scanner--ax25-monitor)
+21. [bt_kiss_bridge — Bluetooth KISS Bridge (BLE + Classic BT)](#19-bt_kiss_bridge--bluetooth-kiss-bridge-ble--classic-bt)
     - [btmon — HCI sniffer (Linux)](#btmon--hci-level-ble-sniffer-linux-only)
-21. [basic_tool — Offline BASIC Interpreter / REPL Debugger](#20-basic_tool--offline-basic-interpreter--repl-debugger)
-22. [ax25sim — AX.25 TNC Simulator](#21-ax25sim--ax25-tnc-simulator)
+22. [basic_tool — Offline BASIC Interpreter / REPL Debugger](#20-basic_tool--offline-basic-interpreter--repl-debugger)
+23. [ax25sim — AX.25 TNC Simulator](#21-ax25sim--ax25-tnc-simulator)
+24. [ax25kiss — Standalone AX.25/KISS Terminal](#22-ax25kiss--standalone-ax25kiss-terminal)
+25. [bt_sniffer — KISS Proxy Tap](#23-bt_sniffer--kiss-proxy-tap)
 
 ---
 
@@ -3154,3 +3459,170 @@ Scripts have access to the same callbacks as `ax25tnc`:
 | `sim_chat.bas` | Simulated QSO partner — responds to amateur radio keywords (NAME, QTH, FREQ, RIG, WX, RST, BAND, ANT, PWR, INFO). |
 | `sim_stress.bas` | Sends 100 numbered padded messages for flow control and windowing testing. |
 
+
+
+---
+
+## 22. ax25kiss — Standalone AX.25/KISS Terminal
+
+`ax25kiss` is a self-contained, single-file AX.25/KISS terminal that sends and
+receives UI (connectionless) frames over any serial KISS TNC.  It has no
+dependency on `ax25lib` — the entire implementation fits in one C++11 source
+file, making it easy to drop into embedded projects or use as a reference
+implementation.
+
+### Build
+
+```bash
+make ax25kiss
+# or as part of the full build:
+make
+```
+
+### What it does
+
+- Opens a serial port in KISS mode
+- Receives all AX.25 frames (any type) and prints them with timestamp, source,
+  destination, and decoded content
+- Sends any text you type as a **UI frame** (connectionless, no ARQ) to the
+  configured destination callsign
+- Supports digipeater paths for relay via WIDE1-1 etc.
+- Runtime-configurable via `/commands` — no restart needed
+
+### Quick start
+
+```bash
+# Monitor UI frames on a serial TNC
+./bin/ax25kiss -c W1AW /dev/ttyUSB0
+
+# Use via bt_kiss_bridge PTY
+./bin/ax25kiss -c W1AW /tmp/kiss
+
+# Override baud rate, destination, and digipeater path
+./bin/ax25kiss -c W1AW -b 1200 -d APRS -p WIDE1-1,WIDE2-1 /dev/ttyUSB0
+```
+
+### Command-line options
+
+```
+ax25kiss [OPTIONS] <serial_device>
+
+  -b <baud>    Baud rate (default: 9600)
+  -c <call>    My callsign, e.g. W1AW-1 (default: N0CALL)
+  -d <dest>    Destination callsign for outgoing UI frames (default: CQ)
+  -p <path>    Digipeater path, comma-separated (e.g. WIDE1-1,WIDE2-1)
+```
+
+### Runtime commands
+
+Type `/command` at the prompt to change settings without restarting:
+
+| Command | Description |
+|---------|-------------|
+| `/mycall <CALL[-SSID]>` | Change your callsign |
+| `/dest <CALL[-SSID]>` | Change destination for outgoing frames |
+| `/digi <CALL>,<CALL>,...` | Set digipeater path (empty = none) |
+| `/txdelay <ms>` | Set KISS TX delay in milliseconds (0–2550) |
+| `/persist <0-255>` | Set KISS persistence byte |
+| `/status` | Show current callsign, destination, path, and timing |
+| `/help` | Show command reference |
+| `/quit` or `/exit` | Exit the terminal |
+
+Any other text you type is sent immediately as a UI frame.
+
+### Difference from ax25tnc
+
+`ax25kiss` is **connectionless only** — it never sends SABM, and all outgoing
+traffic is UI frames.  Use `ax25tnc` when you need a full AX.25 connected
+session (I-frames, ARQ, sliding window).  Use `ax25kiss` for APRS-style
+unproto operation, monitoring, quick tests, or wherever you want the
+smallest binary with zero library dependencies.
+
+---
+
+## 23. bt_sniffer — KISS Proxy Tap
+
+`bt_sniffer` is a transparent proxy that sits between `bt_kiss_bridge` (or any
+KISS source) and an AX.25 client.  It forwards all traffic in both directions
+unchanged while decoding and printing every KISS frame and AX.25 header in
+real-time.  Neither the bridge nor the client needs to be modified — they
+connect as normal, with the sniffer invisibly in the middle.
+
+### Build
+
+```bash
+make bt_sniffer
+# or as part of the full build:
+make
+```
+
+### When to use it
+
+- Radio not transmitting — verify frames are actually reaching the transport
+- Wrong frame content — see exactly what bytes are going to/from the TNC
+- Protocol debugging — compare KISS parameter frames sent by a client against
+  what the TNC expects
+- Unknown frame types — decode proprietary or unexpected frames from a radio
+
+### Architecture
+
+```
+[bt_kiss_bridge]  ←→  [bt_sniffer]  ←→  [ax25tnc / bbs / KISSet]
+  upstream                 │                     downstream client
+  (PTY or TCP)        decode + print
+```
+
+`bt_sniffer` creates its own PTY (`--link /tmp/kiss-tap`) that clients connect
+to.  It connects to the upstream bridge via PTY path or TCP address.  Traffic
+in both directions is decoded and printed, then forwarded unchanged.
+
+### Usage
+
+**Tap a PTY bridge:**
+
+```bash
+# Terminal 1 — start the bridge as normal
+./bin/bt_kiss_bridge --ble --device "GA-5WB" --link /tmp/kiss
+
+# Terminal 2 — start the sniffer tap
+./bin/bt_sniffer /tmp/kiss --link /tmp/kiss-tap
+
+# Terminal 3 — client connects to the tap, not the bridge
+./bin/ax25tnc -c W1AW /tmp/kiss-tap
+```
+
+**Tap a TCP bridge:**
+
+```bash
+# Terminal 1 — bridge in TCP server mode
+./bin/bt_kiss_bridge --ble --device "GA-5WB" --server-port 8001
+
+# Terminal 2 — sniffer connects upstream via TCP, exposes a PTY tap
+./bin/bt_sniffer localhost:8001 --link /tmp/kiss-tap
+
+# Terminal 3 — client uses the tap PTY
+./bin/ax25tnc -c W1AW /tmp/kiss-tap
+```
+
+### Output format
+
+```
+[14:30:01.234]  <- BRIDGE  23 bytes
+    00000000  c0 00 8e 64 aa 8e 96 40  62 40 40 40 40 40 e0  |...d...@b@@@@@.|
+    └─ [KISS<-#1 port=0]  AX.25: W1AW -> CQ  [UI]
+
+[14:30:02.111]  -> BRIDGE   4 bytes
+    00000000  c0 01 28 c0                                     |..(.|
+    └─ [KISS->#2 port=0]  ctrl: TXDELAY  val=40 (0x28)  → 400 ms
+
+[14:30:03.445]  <- BRIDGE  37 bytes
+    00000000  c0 00 82 a0 6a a4 40 40  e0 82 a0 6a a4 62 61  |....j.@....j.ba|
+    └─ [KISS<-#3 port=0]  AX.25: W1AW-1 -> W1BBS-1  [SABM]
+```
+
+Direction markers:
+- `<- BRIDGE` — frame received from the bridge/radio (arriving at client)
+- `-> BRIDGE` — frame sent by the client (going to the radio)
+
+Each frame shows: timestamp, direction, byte count, hex dump, and a decoded
+summary of the KISS command and AX.25 content.
