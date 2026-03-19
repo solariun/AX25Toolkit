@@ -128,7 +128,7 @@ After configuring the radio, verify end-to-end operation:
 # 3. Start the bridge with monitor enabled
 ./bt_kiss_bridge --ble --device "GA-5WB" --monitor
 
-# 4. In a second terminal, connect with ax25tnc or KISSet
+# 4. In a second terminal, connect with ax25tnc
 ax25tnc -c YOURCALL /tmp/kiss
 ```
 
@@ -157,22 +157,6 @@ This sends: `KISS ON\r` → `RESTART\r` → `INTERFACE KISS\r` → `RESET\r`,
 waits 2 seconds, then sends KISS parameter frames (TXDELAY, PERSISTENCE,
 SLOTTIME) one at a time. The sequence is compatible with KPC-3, TNC2,
 and clone firmwares.
-
-### KISSet (macOS packet radio client)
-
-[KISSet](https://github.com/pflarue/kisse) is a macOS AX.25 terminal
-that connects to `bt_kiss_bridge` via TCP:
-
-```bash
-# Start the bridge in TCP server mode
-./bt_kiss_bridge --ble --device "GA-5WB" --server-port 8100 --monitor
-
-# In KISSet: set TNC type = KISS, host = 127.0.0.1, port = 8100
-```
-
-KISSet sends KISS parameter frames (TXDELAY, PERSISTENCE, SLOTTIME,
-TXTAIL, FULLDUPLEX) automatically when it connects — these are normal
-and appear in `--monitor` output as `KISS cmd=TXDELAY val=...` lines.
 
 ---
 
@@ -319,7 +303,6 @@ for each tool follows in its own numbered section.
 bt_kiss_bridge ──► PTY /tmp/kiss ──► ax25tnc   (interactive terminal)
                                  └──► bbs        (multi-user BBS server)
                └──► TCP :8001   ──► ax25tnc -c W1AW localhost:8001
-                                 └──► KISSet (macOS GUI client)
 
 bt_sniffer  ──  transparent tap between bridge and client (observe only)
 ax25sim     ──  virtual TNC for hardware-free development
@@ -345,7 +328,7 @@ any AX.25 software via a PTY symlink (`/tmp/kiss`) or a TCP server.
 # Bridge: BLE → PTY /tmp/kiss, with live frame monitor
 ./bin/bt_kiss_bridge --ble --device "GA-5WB" --monitor
 
-# Bridge: BLE → TCP server (multi-client, e.g. for KISSet on macOS)
+# Bridge: BLE → TCP server (multi-client)
 ./bin/bt_kiss_bridge --ble --device "VR-N76" --server-port 8100 --monitor
 
 # Bridge: Classic BT (Kenwood TH-D75, auto-detect RFCOMM channel via SDP)
@@ -3612,7 +3595,7 @@ make
 ### Architecture
 
 ```
-[bt_kiss_bridge]  ←→  [bt_sniffer]  ←→  [ax25tnc / bbs / KISSet]
+[bt_kiss_bridge]  ←→  [bt_sniffer]  ←→  [ax25tnc / bbs / ax25send]
   upstream                 │                     downstream client
   (PTY or TCP)        decode + print
 ```
