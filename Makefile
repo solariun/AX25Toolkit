@@ -58,19 +58,6 @@ GTEST_LDFLAGS += -lpthread
 LIB_OBJ   = $(BUILDDIR)/ax25lib.o
 BASIC_OBJ = $(BUILDDIR)/basic.o
 
-# ── SimpleBLE paths ─────────────────────────────────────────────────────────
-SBLE_ROOT   = simpleble/simpleble
-SBLE_DEPS   = simpleble/dependencies/external
-SBLE_INC    = $(SBLE_ROOT)/include $(SBLE_ROOT)/sble_build/export $(SBLE_DEPS)
-SBLE_LIB    = $(SBLE_ROOT)/sble_build/lib/libsimpleble.a
-ifeq ($(UNAME), Linux)
-    SBLE_SYS = -lpthread -ldbus-1
-else
-    SBLE_SYS = -framework CoreBluetooth -framework Foundation \
-               -framework IOBluetooth -framework IOKit \
-               -framework CoreFoundation -lpthread
-endif
-
 # ── Native BLE (BlueZ D-Bus on Linux, CoreBluetooth on macOS) ──────────────
 ifeq ($(UNAME), Linux)
     DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1 2>/dev/null)
@@ -134,12 +121,6 @@ $(BINDIR)/bt_sniffer: $(SRCDIR)/bt_sniffer.cpp $(LIBDIR)/ax25dump.hpp | $(BINDIR
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Ilib -o $@ $< $(LDUTIL)
 	@echo "Built: bin/bt_sniffer"
 
-$(BINDIR)/bt_kiss_bridge_sble: $(SRCDIR)/bt_kiss_bridge_sble.cpp $(SBLE_LIB) | $(BINDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra \
-	    -Ilib $(addprefix -I,$(SBLE_INC)) \
-	    -o $@ $< $(SBLE_LIB) $(SBLE_SYS)
-	@echo "Built: bin/bt_kiss_bridge_sble"
-
 # ── Shorthand targets (so `make bbs` still works) ──────────────────────────
 bbs: $(BINDIR)/bbs
 ax25kiss: $(BINDIR)/ax25kiss
@@ -149,9 +130,7 @@ basic_tool: $(BINDIR)/basic_tool
 bt_kiss_bridge: $(BINDIR)/bt_kiss_bridge
 ble_kiss_bridge: $(BINDIR)/ble_kiss_bridge
 bt_sniffer: $(BINDIR)/bt_sniffer
-bt_kiss_bridge_sble: $(BINDIR)/bt_kiss_bridge_sble
-
-.PHONY: bbs ax25kiss ax25tnc ax25sim basic_tool bt_kiss_bridge ble_kiss_bridge bt_sniffer bt_kiss_bridge_sble
+.PHONY: bbs ax25kiss ax25tnc ax25sim basic_tool bt_kiss_bridge ble_kiss_bridge bt_sniffer
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 $(BINDIR)/test_ax25lib: $(TESTDIR)/test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) | $(BINDIR)
