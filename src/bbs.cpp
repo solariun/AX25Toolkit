@@ -784,11 +784,15 @@ BBS options:
 
 One-shot modes:
   --ui   <DEST> <text>    Send one UI frame and exit
-  --aprs <text>           Send one APRS frame and exit
+  --aprs <text>           Send one raw APRS info string and exit
+  --pos  <LAT,LON> [comment]  Send APRS position report and exit
+  --msg  <CALL> <text>    Send APRS message and exit
 
 Examples:
   bbs -c PY2XXX-1 -b 9600 /dev/ttyUSB0
   bbs -C bbs.ini
+  bbs -c PU1ABC --pos -23.55,-46.63 "Mobile" /tmp/kiss
+  bbs -c PU1ABC --msg G2UGK "Hello" /tmp/kiss
 )";
 
 int main(int argc, char* argv[]) {
@@ -798,7 +802,9 @@ int main(int argc, char* argv[]) {
     std::string db_path       = "bbs.db";
     std::string ini_file;
     std::string ui_dest, ui_text, aprs_text;
+    std::string pos_arg, pos_comment, msg_dest, msg_text;
     bool one_shot_ui = false, one_shot_aprs = false;
+    bool one_shot_pos = false, one_shot_msg = false;
     ScriptFinder script_finder;
 
     // Pre-scan for BBS-specific long options
@@ -808,6 +814,8 @@ int main(int argc, char* argv[]) {
         std::string a = argv[i];
         if      (a == "--ui"   && i+2 < argc) { one_shot_ui=true; ui_dest=argv[++i]; ui_text=argv[++i]; }
         else if (a == "--aprs" && i+1 < argc) { one_shot_aprs=true; aprs_text=argv[++i]; }
+        else if (a == "--pos"  && i+1 < argc) { one_shot_pos=true; pos_arg=argv[++i]; if (i+1<argc && argv[i+1][0]!='-') pos_comment=argv[++i]; }
+        else if (a == "--msg"  && i+2 < argc) { one_shot_msg=true; msg_dest=argv[++i]; msg_text=argv[++i]; }
         else if (a == "-n"     && i+1 < argc) bbs_name = argv[++i];
         else if (a == "-u"     && i+1 < argc) beacon_text = argv[++i];
         else if (a == "-B"     && i+1 < argc) beacon_int = std::atoi(argv[++i]);
@@ -862,6 +870,20 @@ int main(int argc, char* argv[]) {
 
     if (one_shot_ui)   { router.send_ui(Addr::make(ui_dest), 0xF0, ui_text);  return 0; }
     if (one_shot_aprs) { router.send_aprs(aprs_text);                          return 0; }
+    if (one_shot_pos) {
+        double lat = 0, lon = 0;
+        auto comma = pos_arg.find(',');
+        if (comma != std::string::npos) {
+            lat = std::strtod(pos_arg.c_str(), nullptr);
+            lon = std::strtod(pos_arg.c_str() + comma + 1, nullptr);
+        }
+        router.send_aprs(aprs::make_pos(lat, lon, '>', '/', pos_comment));
+        return 0;
+    }
+    if (one_shot_msg) {
+        router.send_aprs(aprs::make_msg(msg_dest, msg_text));
+        return 0;
+    }
 
     std::string digi_str;
     for (std::size_t i = 0; i < p.cfg.digis.size(); ++i) {

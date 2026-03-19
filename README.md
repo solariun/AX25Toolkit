@@ -476,15 +476,18 @@ and full AX.25 ARQ state machines.  Each caller gets an independent session.
 # Start BBS from INI config file
 ./bin/bbs -C bbs.ini
 
-# Send a one-shot APRS beacon and exit
+# One-shot modes (send and exit):
 ./bin/bbs -c W1BBS-1 --aprs "!2330.00S/04636.00W>KISSBBS on the air" /tmp/kiss
+./bin/bbs -c W1BBS-1 --pos -23.50,-46.60 "KISSBBS on the air" /tmp/kiss
+./bin/bbs -c W1BBS-1 --msg G2UGK "Hello from KISSBBS" /tmp/kiss
+./bin/bbs -c W1BBS-1 --ui CQ "Net starts at 2100Z" /tmp/kiss
 
-# Or use ax25send for APRS position, message, and UI frames:
+# Or use ax25send (standalone, no BBS overhead):
 ./bin/ax25send -c W1BBS-1 /tmp/kiss --pos -23.5000,-46.6000 "KISSBBS on the air"
 ./bin/ax25send -c W1BBS-1 /tmp/kiss --msg G2UGK "Hello from KISSBBS"
 ./bin/ax25send -c W1BBS-1 /tmp/kiss --ui CQ "Net starts at 2100Z"
 
-# With digipeater path and repeat:
+# With digipeater path and repeat (ax25send only):
 ./bin/ax25send -c W1BBS-1 -p WIDE1-1,WIDE2-1 /tmp/kiss --pos -23.50,-46.60 "Mobile" -n 5 -i 60
 ```
 
