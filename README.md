@@ -25,7 +25,7 @@ brew install googletest sqlite
 sudo apt-get install libgtest-dev libsqlite3-dev libdbus-1-dev libbluetooth-dev pkg-config
 
 # 3. Build everything + run tests
-make          # builds: bbs  ax25kiss  ax25tnc  basic_tool  bt_kiss_bridge  ax25sim
+make          # builds: bbs  ax25kiss  ax25tnc  ax25send  basic_tool  bt_kiss_bridge  ax25sim
 make test     # runs the GoogleTest suite — all must pass
 ```
 
@@ -195,6 +195,7 @@ radio station.
 | `bt_sniffer` | Transparent KISS proxy tap — observe traffic without interrupting it |
 | `ax25sim` | PTY-based TNC simulator for hardware-free development and testing |
 | `basic_tool` | Offline BASIC REPL and script debugger for BBS script development |
+| `ax25send` | Fire-and-forget APRS position/message and UI frame sender |
 
 - **`bt_kiss_bridge`** — Use inexpensive Bluetooth radios (BLE or Classic BT) as
   packet modems.  No expensive dedicated TNC hardware required; a handheld radio
@@ -233,6 +234,11 @@ radio station.
   Bluetooth adapter.  Catch bugs before they hit the air.
   See [§2 Development Workflow](#2-development-workflow--best-practices) and
   [§21 ax25sim](#21-ax25sim--ax25-tnc-simulator).
+
+- **`ax25send`** — Fire-and-forget CLI tool for sending APRS position reports,
+  APRS messages, and generic UI frames.  Opens the KISS device, transmits, and
+  exits.  Ideal for cron jobs, scripts, and one-shot beacons.
+  See [§24 ax25send](#24-ax25send--aprs--ui-frame-sender).
 
 - **`basic_tool`** — Offline BASIC interpreter and REPL debugger.  Write and
   test BBS scripts without connecting to anything — line-by-line trace,
@@ -318,6 +324,7 @@ bt_kiss_bridge ──► PTY /tmp/kiss ──► ax25tnc   (interactive terminal
 bt_sniffer  ──  transparent tap between bridge and client (observe only)
 ax25sim     ──  virtual TNC for hardware-free development
 ax25kiss    ──  standalone UI-frame terminal (no lib, one file)
+ax25send    ──  fire-and-forget APRS position/message & UI sender
 basic_tool  ──  offline BASIC script debugger
 ```
 
@@ -464,6 +471,31 @@ Full reference: [§22 ax25kiss](#22-ax25kiss--standalone-ax25kiss-terminal)
 
 ---
 
+### `ax25send` — APRS & UI Frame Sender
+
+Fire-and-forget CLI tool for sending APRS position reports, APRS messages,
+and generic UI frames.  Opens the KISS device, transmits, and exits — no
+interactive session.  Supports repeat count, interval, digipeater path,
+symbol selection, and TNC init.
+
+```bash
+# Send APRS position report
+./bin/ax25send -c W1AW /tmp/kiss --pos -23.55,-46.63 "Mobile"
+
+# Send APRS message to a station
+./bin/ax25send -c W1AW /tmp/kiss --msg PY2XXX "Hello from bridge"
+
+# Send generic UI frame
+./bin/ax25send -c W1AW /tmp/kiss --ui CQ "Hello on packet radio"
+
+# Repeat 5 times, 60 s apart, via digipeaters
+./bin/ax25send -c W1AW -p WIDE1-1,WIDE2-1 /tmp/kiss --pos -23.55,-46.63 -n 5 -i 60
+```
+
+Full reference: [§24 ax25send](#24-ax25send--aprs--ui-frame-sender)
+
+---
+
 ### `bt_sniffer` — KISS Proxy Tap
 
 Inserts itself transparently between `bt_kiss_bridge` and any AX.25 client.
@@ -605,6 +637,7 @@ Full reference: [§20 basic_tool](#20-basic_tool--offline-basic-interpreter--rep
 23. [ax25sim — AX.25 TNC Simulator](#21-ax25sim--ax25-tnc-simulator)
 24. [ax25kiss — Standalone AX.25/KISS Terminal](#22-ax25kiss--standalone-ax25kiss-terminal)
 25. [bt_sniffer — KISS Proxy Tap](#23-bt_sniffer--kiss-proxy-tap)
+26. [ax25send — APRS & UI Frame Sender](#24-ax25send--aprs--ui-frame-sender)
 
 ---
 
@@ -827,7 +860,7 @@ sudo dnf install gtest-devel sqlite-devel dbus-devel bluez-libs-devel
 ### Build targets
 
 ```bash
-make                  # build bbs, ax25kiss, ax25tnc, basic_tool, and bt_kiss_bridge
+make                  # build bbs, ax25kiss, ax25tnc, ax25send, basic_tool, and bt_kiss_bridge
 make test             # compile and run all unit tests
 make clean            # remove all build artefacts
 make bt_kiss_bridge   # build only the Bluetooth KISS bridge (BLE + Classic BT)
@@ -1119,7 +1152,7 @@ Expected output:
 | `RouterUI` | 2 | UI send/receive, APRS broadcast (fires on_ui regardless of dest) |
 | `Timers` | 1 | T1 retransmit leading to link failure after N2 retries |
 | `IniConfig` | 4 | Load file, missing file, inline comments, bool/double getters |
-| `BasicInterp` | 17 | PRINT, arithmetic, string concat, IF/THEN/ELSE multi-stmt, FOR/NEXT, WHILE/WEND, GOSUB/RETURN, string functions, EXEC, EXEC timeout, SEND_APRS, SEND_UI, math |
+| `BasicInterp` | 17 | PRINT, arithmetic, string concat, IF/THEN/ELSE multi-stmt, FOR/NEXT, WHILE/WEND, GOSUB/RETURN, string functions, EXEC, EXEC timeout, SEND_APRS, SEND_APRS_POS, SEND_APRS_MSG, SEND_UI, math |
 | `QBasic` | 23 | Labels+GOTO, CONST, block IF/ELSEIF/ELSE/END IF, DO/LOOP WHILE, DO WHILE, DO/LOOP UNTIL, EXIT DO, EXIT FOR, SELECT CASE (simple/ELSE/range/IS), SUB (CALL+implicit), FUNCTION (numeric+string), nested function calls, EXIT SUB, TYPE/DIM, no-line-numbers, GOSUB to label |
 | `QBasicExt` | 35 | FOR IN MATCH (basic/numbers/no-matches/EXIT FOR), REMATCH, REFIND$, REALL$ (default+custom sep), RESUB$, RESUBALL$, REGROUP$, RECOUNT, MAP (set/get/has/del/keys/size/clear), QUEUE (push/pop/peek/size/empty/clear/pop-empty/DO WHILE loop), ARRAY (DIM/read/write/numeric/auto-declare/assoc-key/size/FOR IN order/empty/function-return) |
 | `TokenizeArgs` | 4 | Plain args, double-quoted args, single-quoted args, empty input |
@@ -1773,10 +1806,14 @@ RECV reply$, 15000             ' receive with 15-second timeout
 
 ```basic
 SEND_APRS "!1234.00N/00567.00W>Hello from BASIC"
+SEND_APRS_POS -23.55, -46.63, "Mobile station"
+SEND_APRS_MSG "PY2XXX", "Hello from BBS"
 SEND_UI "APRS", "de W1BBS: status update"
 ```
 
-`SEND_APRS info$` — transmits an APRS UI frame via the router's callsign.
+`SEND_APRS info$` — transmits a raw APRS UI frame via the router's callsign.
+`SEND_APRS_POS lat, lon[, comment$]` — builds and transmits an APRS position report (symbol `>`, primary table).
+`SEND_APRS_MSG dest$, text$` — builds and transmits an APRS message to the given addressee.
 `SEND_UI dest$, text$` — transmits a raw UI frame to the given destination (PID `0xF0`).
 
 #### System — run external commands
@@ -2353,12 +2390,18 @@ interp.on_log = [](const std::string& msg) {
     std::cerr << "[BASIC] " << msg << "\n";
 };
 
-// Optional: APRS/UI transmit callbacks (used by SEND_APRS / SEND_UI)
+// Optional: APRS/UI transmit callbacks (used by SEND_APRS / SEND_UI / SEND_APRS_POS / SEND_APRS_MSG)
 interp.on_send_aprs = [&](const std::string& info) {
     router.send_aprs(info);
 };
 interp.on_send_ui = [&](const std::string& dest, const std::string& text) {
     router.send_ui(ax25::Addr::make(dest), 0xF0, text);
+};
+interp.on_send_aprs_pos = [&](double lat, double lon, const std::string& comment) {
+    router.send_aprs(aprs::make_pos(lat, lon, '>', '/', comment));
+};
+interp.on_send_aprs_msg = [&](const std::string& dest, const std::string& text) {
+    router.send_aprs(aprs::make_msg(dest, text));
 };
 
 // Pre-fill variables
@@ -2392,8 +2435,9 @@ using namespace ax25;
 
 // ── Build a position report ───────────────────────────────────────────
 // lat/lon: decimal degrees (negative = S / W)
-// sym:     single APRS symbol character  (default '>' = car)
-std::string pos = aprs::make_pos(-23.55, -46.63, '-', "W1AW Home");
+// sym:     APRS symbol code character  (default '>' = car)
+// table:   symbol table ID  ('/' = primary, '\\' = alternate, overlay A-Z/0-9)
+std::string pos = aprs::make_pos(-23.55, -46.63, '-', '/', "W1AW Home");
 // → "!2333.00S/04637.80W-W1AW Home"
 
 router.send_aprs(pos);
@@ -3327,8 +3371,9 @@ interp.run();
   database to avoid touching production data.
 - `HTTPGET`, `SOCKOPEN`, `EXEC` work normally; be mindful of network/shell
   access in automated test pipelines.
-- `SEND_APRS` and `SEND_UI` do nothing by default (callbacks are not set);
-  assign `on_send_aprs` / `on_send_ui` if you need them.
+- `SEND_APRS`, `SEND_APRS_POS`, `SEND_APRS_MSG`, and `SEND_UI` do nothing
+  by default (callbacks are not set); assign `on_send_aprs` /
+  `on_send_aprs_pos` / `on_send_aprs_msg` / `on_send_ui` if you need them.
 - Ctrl-C calls `interrupt()` on the running interpreter for a clean stop.
 
 ---
@@ -3626,3 +3671,71 @@ Direction markers:
 
 Each frame shows: timestamp, direction, byte count, hex dump, and a decoded
 summary of the KISS command and AX.25 content.
+
+---
+
+## 24. ax25send — APRS & UI Frame Sender
+
+`ax25send` is a fire-and-forget CLI tool for transmitting APRS position
+reports, APRS messages, and generic UI frames over a KISS TNC.  It opens
+the device, sends the frame(s), and exits — no interactive session, no
+event loop.  Ideal for cron jobs, shell scripts, and one-shot beacons.
+
+### Build
+
+```bash
+make ax25send
+# or as part of the full build:
+make
+```
+
+### Modes
+
+Exactly one mode flag is required:
+
+| Flag | Description |
+|------|-------------|
+| `--pos LAT,LON` | Send an APRS position report.  Latitude and longitude in decimal degrees (negative = S / W).  Optional trailing argument sets the comment. |
+| `--msg CALL` | Send an APRS message to CALL.  The next argument is the message text. |
+| `--ui DEST` | Send a generic UI frame to DEST.  The next argument is the payload. |
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-c CALL` | *(required)* | Source callsign |
+| `-b BAUD` | `9600` | Serial baud rate |
+| `-p PATH` | *(none)* | Digipeater path, comma-separated (e.g. `WIDE1-1,WIDE2-1`) |
+| `-d DEST` | `APRS` | Override APRS destination callsign |
+| `-S TC` | `/>` | APRS symbol: two characters — table + code (e.g. `/>` = car, `/-` = house) |
+| `-n COUNT` | `1` | Repeat transmission N times |
+| `-i SECS` | `30` | Interval between repeats (seconds) |
+| `--pid 0xNN` | `0xF0` | Override PID byte |
+| `--tnc` | | Send KISS TNC init commands before transmitting |
+
+`DEVICE` is a serial port path, PTY symlink (`/tmp/kiss`), or `host:port` for TCP.
+
+### Examples
+
+```bash
+# APRS position report
+ax25send -c PU1ABC /tmp/kiss --pos -23.5505,-46.6333 "Mobile station"
+
+# APRS message
+ax25send -c PU1ABC /tmp/kiss --msg G2UGK "Hello from bridge"
+
+# Generic UI frame
+ax25send -c PU1ABC /tmp/kiss --ui CQ "Hello on packet radio"
+
+# Position with digipeater path
+ax25send -c PU1ABC -p WIDE1-1,WIDE2-1 /tmp/kiss --pos -23.55,-46.63
+
+# Beacon 5 times, 60 s apart
+ax25send -c PU1ABC /tmp/kiss --ui BEACON -n 5 -i 60 "Net at 2100Z"
+
+# Via TCP bridge
+ax25send -c PU1ABC localhost:8100 --pos -23.55,-46.63 "TCP test"
+
+# House symbol (primary table, code '-')
+ax25send -c PU1ABC -S /- /tmp/kiss --pos -23.55,-46.63 "Home QTH"
+```

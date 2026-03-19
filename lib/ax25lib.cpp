@@ -942,7 +942,7 @@ void CLIParams::print_help(const char* prog, const char* extra) {
 // =============================================================================
 namespace aprs {
 
-std::string make_pos(double lat, double lon, char sym, const std::string& comment) {
+std::string make_pos(double lat, double lon, char sym, char table, const std::string& comment) {
     char latch = lat >= 0 ? 'N' : 'S';
     char lonch = lon >= 0 ? 'E' : 'W';
     double alat = lat >= 0 ? lat : -lat;
@@ -950,8 +950,8 @@ std::string make_pos(double lat, double lon, char sym, const std::string& commen
     int latd = (int)alat;  double latm = (alat - latd) * 60.0;
     int lond = (int)alon;  double lonm = (alon - lond) * 60.0;
     char buf[96];
-    snprintf(buf, sizeof(buf), "!%02d%05.2f%c/%03d%05.2f%c%c%s",
-             latd, latm, latch, lond, lonm, lonch, sym, comment.c_str());
+    snprintf(buf, sizeof(buf), "!%02d%05.2f%c%c%03d%05.2f%c%c%s",
+             latd, latm, latch, table, lond, lonm, lonch, sym, comment.c_str());
     return buf;
 }
 

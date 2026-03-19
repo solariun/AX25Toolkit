@@ -2217,6 +2217,26 @@ int Basic::cmd_send_ui(Lexer& lx, int) {
     return -1;
 }
 
+// SEND_APRS_POS lat, lon[, comment$]  — send APRS position report
+int Basic::cmd_send_aprs_pos(Lexer& lx, int) {
+    Value lat=eval_expr(lx); lx.eat_ch(',');
+    Value lon=eval_expr(lx);
+    std::string comment;
+    if (lx.peek_ch() == ',') { lx.eat_ch(','); comment = eval_expr(lx).to_str(); }
+    if (on_send_aprs_pos) on_send_aprs_pos(lat.to_num(), lon.to_num(), comment);
+    else log("SEND_APRS_POS: no callback");
+    return -1;
+}
+
+// SEND_APRS_MSG dest$, text$          — send APRS message
+int Basic::cmd_send_aprs_msg(Lexer& lx, int) {
+    Value dest=eval_expr(lx); lx.eat_ch(',');
+    Value text=eval_expr(lx);
+    if (on_send_aprs_msg) on_send_aprs_msg(dest.to_str(), text.to_str());
+    else log("SEND_APRS_MSG: no callback");
+    return -1;
+}
+
 // =============================================================================
 // MAP — named string-keyed associative arrays
 // MAP_SET  mapname$, key$, value     — create or update entry
@@ -2452,8 +2472,10 @@ int Basic::exec_stmt(Lexer& lx, int linenum) {
     if (kw=="EXEC")      { lx.next_tok(); return cmd_exec(lx, linenum); }
 
     // ── APRS / UI ─────────────────────────────────────────────────────────
-    if (kw=="SEND_APRS") { lx.next_tok(); return cmd_send_aprs(lx, linenum); }
-    if (kw=="SEND_UI")   { lx.next_tok(); return cmd_send_ui(lx, linenum); }
+    if (kw=="SEND_APRS")     { lx.next_tok(); return cmd_send_aprs(lx, linenum); }
+    if (kw=="SEND_UI")       { lx.next_tok(); return cmd_send_ui(lx, linenum); }
+    if (kw=="SEND_APRS_POS") { lx.next_tok(); return cmd_send_aprs_pos(lx, linenum); }
+    if (kw=="SEND_APRS_MSG") { lx.next_tok(); return cmd_send_aprs_msg(lx, linenum); }
 
     // ── MAP ───────────────────────────────────────────────────────────────────
     if (kw=="MAP_SET")   { lx.next_tok(); return cmd_map_set  (lx, linenum); }

@@ -529,9 +529,12 @@ namespace aprs {
 // Parsed APRS message
 struct Msg { std::string to, text, seq; };
 
-// Build APRS position info string  (!DDMM.mmN/DDDMM.mmWsym[comment])
-// lat/lon: decimal degrees (negative = S / W); sym: APRS symbol char
-std::string make_pos(double lat, double lon, char sym = '>', const std::string& comment = "");
+// Build APRS position info string  (!DDMM.mmN<table>DDDMM.mmW<sym>[comment])
+// lat/lon: decimal degrees (negative = S / W)
+// sym: APRS symbol code char (default '>' = car)
+// table: symbol table ID ('/' = primary, '\\' = alternate, overlay A-Z/0-9)
+std::string make_pos(double lat, double lon, char sym = '>', char table = '/',
+                     const std::string& comment = "");
 
 // Build APRS message info string  (:ADDRESSEE :text{seq})
 // Sequence number auto-incremented globally.

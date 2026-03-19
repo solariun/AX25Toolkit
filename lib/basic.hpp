@@ -62,6 +62,9 @@ public:
     std::function<void(const std::string&)>              on_send_aprs; // SEND_APRS info$
     std::function<void(const std::string&,               // SEND_UI dest$, text$
                        const std::string&)>              on_send_ui;
+    std::function<void(double, double, const std::string&)> on_send_aprs_pos; // SEND_APRS_POS lat, lon[, comment$]
+    std::function<void(const std::string&,               // SEND_APRS_MSG dest$, text$
+                       const std::string&)>              on_send_aprs_msg;
     std::function<void(int linenum,                      // trace: called before each line
                        const std::string& src)>          on_trace;
 
@@ -330,6 +333,8 @@ private:
     int cmd_exec       (Lexer& lx, int ln);
     int cmd_send_aprs  (Lexer& lx, int ln);
     int cmd_send_ui    (Lexer& lx, int ln);
+    int cmd_send_aprs_pos (Lexer& lx, int ln);
+    int cmd_send_aprs_msg (Lexer& lx, int ln);
     // ── MAP commands ─────────────────────────────────────────────────────────
     int cmd_map_set   (Lexer& lx, int ln);
     int cmd_map_get   (Lexer& lx, int ln);

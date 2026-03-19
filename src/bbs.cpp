@@ -366,6 +366,12 @@ private:
         interp.on_send_ui = [this](const std::string& dest, const std::string& text) {
             router_.send_ui(Addr::make(dest), 0xF0, text);
         };
+        interp.on_send_aprs_pos = [this](double lat, double lon, const std::string& comment) {
+            router_.send_aprs(aprs::make_pos(lat, lon, '>', '/', comment));
+        };
+        interp.on_send_aprs_msg = [this](const std::string& dest, const std::string& text) {
+            router_.send_aprs(aprs::make_msg(dest, text));
+        };
 
         interp.set_str("callsign$", ses.callsign);
         interp.set_str("bbs_name$", name_);
@@ -664,7 +670,7 @@ private:
                 { sym = args[3][0]; for (std::size_t i = 4; i < args.size(); ++i) { if (!rest.empty()) rest += " "; rest += args[i]; } }
             else
                 { for (std::size_t i = 3; i < args.size(); ++i) { if (!rest.empty()) rest += " "; rest += args[i]; } }
-            std::string info = aprs::make_pos(lat, lon, sym, rest);
+            std::string info = aprs::make_pos(lat, lon, sym, '/', rest);
             router_.send_aprs(info);
             ses.println("APRS position sent: " + info);
             std::cerr << "[" << timestamp() << "] APRS-POS " << call << ": " << info << "\n";

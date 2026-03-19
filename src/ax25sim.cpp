@@ -345,6 +345,16 @@ static void run_basic_script(
         ++st.frames_tx;
     };
 
+    interp.on_send_aprs_pos = [&](double lat, double lon, const std::string& comment) {
+        router.send_aprs(aprs::make_pos(lat, lon, '>', '/', comment));
+        ++st.frames_tx;
+    };
+
+    interp.on_send_aprs_msg = [&](const std::string& dest, const std::string& text) {
+        router.send_aprs(aprs::make_msg(dest, text));
+        ++st.frames_tx;
+    };
+
     // Override on_data temporarily if connected
     std::function<void(const uint8_t*, std::size_t)> old_on_data;
     if (conn) {

@@ -88,7 +88,7 @@ INSTALLDIR = $(PREFIX)/bin
 
 .PHONY: all clean test install uninstall install-deps help
 
-all: bbs ax25kiss ax25tnc ax25sim basic_tool bt_kiss_bridge bt_sniffer
+all: bbs ax25kiss ax25tnc ax25sim ax25send basic_tool bt_kiss_bridge bt_sniffer
 
 # ── Build directories ───────────────────────────────────────────────────────
 $(BUILDDIR) $(BINDIR):
@@ -117,6 +117,9 @@ $(BINDIR)/ax25sim: $(SRCDIR)/ax25sim.cpp $(LIB_OBJ) $(BASIC_OBJ) | $(BINDIR)
 $(BINDIR)/basic_tool: $(SRCDIR)/basic_tool.cpp $(BASIC_OBJ) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) $(SQLITE_FLAGS) -o $@ $< $(BASIC_OBJ) $(SQLITE_LIBS)
 
+$(BINDIR)/ax25send: $(SRCDIR)/ax25send.cpp $(LIB_OBJ) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LIB_OBJ)
+
 $(BINDIR)/bt_sniffer: $(SRCDIR)/bt_sniffer.cpp $(LIBDIR)/ax25dump.hpp | $(BINDIR)
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Ilib -o $@ $< $(LDUTIL)
 	@echo "Built: bin/bt_sniffer"
@@ -126,11 +129,12 @@ bbs: $(BINDIR)/bbs
 ax25kiss: $(BINDIR)/ax25kiss
 ax25tnc: $(BINDIR)/ax25tnc
 ax25sim: $(BINDIR)/ax25sim
+ax25send: $(BINDIR)/ax25send
 basic_tool: $(BINDIR)/basic_tool
 bt_kiss_bridge: $(BINDIR)/bt_kiss_bridge
 ble_kiss_bridge: $(BINDIR)/ble_kiss_bridge
 bt_sniffer: $(BINDIR)/bt_sniffer
-.PHONY: bbs ax25kiss ax25tnc ax25sim basic_tool bt_kiss_bridge ble_kiss_bridge bt_sniffer
+.PHONY: bbs ax25kiss ax25tnc ax25sim ax25send basic_tool bt_kiss_bridge ble_kiss_bridge bt_sniffer
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 $(BINDIR)/test_ax25lib: $(TESTDIR)/test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) | $(BINDIR)

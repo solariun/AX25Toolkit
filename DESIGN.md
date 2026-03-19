@@ -684,6 +684,7 @@ flowchart LR
         TCP["TCP Server<br/>:8001"]
         A1["ax25tnc"]
         A2["bbs"]
+        A3["ax25send"]
     end
 
     TNC <-->|GATT notify/write| BLE
@@ -700,6 +701,7 @@ flowchart LR
 
     PTY --- A1
     TCP --- A2
+    PTY --- A3
 ```
 
 ---
