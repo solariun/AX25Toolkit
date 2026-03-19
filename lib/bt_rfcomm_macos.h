@@ -42,6 +42,11 @@ void bt_macos_write(bt_macos_handle_t h, const uint8_t* data, size_t len);
 // True while the RFCOMM channel is open.
 bool bt_macos_is_connected(bt_macos_handle_t h);
 
+// Pump the main-thread NSRunLoop briefly so IOBluetooth delegate
+// callbacks (rfcommChannelData etc.) are delivered.  Call this
+// periodically from the bridge's select() loop on the main thread.
+void bt_macos_pump(void);
+
 // ---------------------------------------------------------------------------
 // Discovery
 // ---------------------------------------------------------------------------

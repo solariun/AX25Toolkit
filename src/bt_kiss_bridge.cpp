@@ -455,6 +455,8 @@ struct RadioTransport {
     // Block until all queued writes have been dispatched to the BLE/BT layer.
     // Default: no-op (synchronous transports don't need it).
     virtual void flush() {}
+    // Pump platform run loop (macOS BT needs this for delegate callbacks).
+    virtual void pump() {}
     virtual int  read_fd() const { return -1; }
     virtual void set_on_disconnect(std::function<void()>) {}
     virtual const char* label() const = 0;               // "BLE" or "BT"
@@ -784,6 +786,10 @@ public:
             handle_ = nullptr;
         }
     }
+
+    // Pump the main-thread NSRunLoop so IOBluetooth delivers
+    // delegate callbacks (rfcommChannelData).
+    void pump() override { bt_macos_pump(); }
 };
 
 #else
@@ -1171,6 +1177,9 @@ static void do_test(const BridgeConfig& cfg, const std::string& call, double int
             next_ka = now + std::chrono::milliseconds(cfg.ble_ka_ms);
         }
 
+        // Pump platform run loop (macOS BT)
+        transport.pump();
+
         // Check for RX data
         if (rx_fd >= 0) {
             fd_set rfds;
@@ -1314,6 +1323,9 @@ static void do_sniff(const BridgeConfig& cfg,
             ++tx_frames; tx_bytes += tx_periodic.size();
             next_tx = now + std::chrono::milliseconds((long long)(tx_interval_s * 1000));
         }
+
+        // Pump platform run loop (macOS BT)
+        transport->pump();
 
         // BLE keep-alive
         if (cfg.ble_ka_ms > 0 && now >= next_ka) {
@@ -1579,8 +1591,12 @@ static void do_bridge(const BridgeConfig& cfg, RadioTransport& transport) {
                 max_fd = std::max(max_fd, tfd);
             }
 
-            struct timeval tv{0, 100000};  // 100 ms
+            struct timeval tv{0, 50000};  // 50 ms (shorter for pump responsiveness)
             bool got_any = select(max_fd + 1, &rfds, nullptr, nullptr, &tv) > 0;
+
+            // Pump platform run loop (macOS BT delivers delegate
+            // callbacks via the main thread's NSRunLoop)
+            transport.pump();
 
             // BLE keep-alive (only for BLE transport)
             auto* ble_tp = dynamic_cast<BleTransport*>(&transport);

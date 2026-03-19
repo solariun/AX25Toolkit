@@ -560,6 +560,7 @@ assert(sessions.empty());
                               │ socket fd     │    │ IOBluetoothRFCOMMChannel│
                               │ SDP via BlueZ │    │ delegate → pipe() fd    │
                               └──────────────┘    │ performSDPQuery         │
+                                                  │ bt_macos_pump() for RL  │
                                                   └─────────────────────────┘
 
   ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -567,6 +568,7 @@ assert(sessions.empty());
   │  ──────────────────────────────────────────────────────────────────────────  │
   │  PTY pair (/tmp/kiss symlink) ←──── mutual exclusive ────→ TCP server       │
   │  select() loop: PTY + TCP clients + transport.read_fd()                      │
+  │  transport.pump() each iteration (macOS BT: CFRunLoopRunInMode for delegate) │
   │  KISS + AX.25 monitor (--monitor)                                            │
   │  Auto-reconnect (up to 10 retries, 5s pause)                                 │
   └──────────────────────────────────────────────────────────────────────────────┘
@@ -593,6 +595,8 @@ classDiagram
         +is_connected() bool
         +write(data, len)
         +read_fd() int
+        +flush()
+        +pump()
         +set_on_receive(cb)
         +set_on_disconnect(cb)
         +label() string

@@ -26,6 +26,30 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <thread>
+
+// ─── Waiter — C++ condition_variable signalling for Obj-C delegates ─────────
+struct Waiter {
+    std::mutex              mtx;
+    std::condition_variable cv;
+    bool                    done = false;
+    void signal() {
+        std::lock_guard<std::mutex> lk(mtx);
+        done = true;
+        cv.notify_one();
+    }
+    bool wait(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lk(mtx);
+        return cv.wait_for(lk, timeout, [this]{ return done; });
+    }
+    void reset() {
+        std::lock_guard<std::mutex> lk(mtx);
+        done = false;
+    }
+};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -91,8 +115,9 @@ static std::string hr(char ch = '-') {
 
 // ─── RFCOMM Connection Handle ───────────────────────────────────────────────
 
-// Forward declare the delegate class
+// Forward declarations
 @class BtRfcommDelegate;
+static int sdp_find_spp_channel(IOBluetoothDevice* device, bool keep_connection = false);
 
 struct BtMacosHandle {
     IOBluetoothDevice*        device   = nil;
@@ -169,10 +194,9 @@ struct BtMacosHandle {
 
 @interface BtSdpQueryDelegate : NSObject
 {
-    BOOL _done;
     IOReturn _status;
 }
-@property (nonatomic, readonly) BOOL isDone;
+@property (nonatomic, assign) Waiter* waiter;
 @property (nonatomic, readonly) IOReturn status;
 @end
 
@@ -180,17 +204,16 @@ struct BtMacosHandle {
 
 - (instancetype)init {
     self = [super init];
-    if (self) { _done = NO; _status = kIOReturnSuccess; }
+    if (self) { _status = kIOReturnSuccess; _waiter = nullptr; }
     return self;
 }
 
-- (BOOL)isDone { return _done; }
 - (IOReturn)status { return _status; }
 
 - (void)sdpQueryComplete:(IOBluetoothDevice*)device status:(IOReturn)status {
     (void)device;
     _status = status;
-    _done = YES;
+    if (_waiter) _waiter->signal();
 }
 
 @end
@@ -217,26 +240,28 @@ static bool perform_sdp_query(IOBluetoothDevice* device,
         we_opened = true;
     }
 
-    // 2. Perform SDP query with delegate
+    // 2. Perform SDP query with delegate + condition_variable
+    Waiter sdp_waiter;
     BtSdpQueryDelegate* delegate = [[BtSdpQueryDelegate alloc] init];
+    delegate.waiter = &sdp_waiter;
+
     IOReturn ret = [device performSDPQuery:delegate];
     if (ret != kIOReturnSuccess) {
         std::cerr << "  SDP query initiation failed: 0x"
                   << std::hex << ret << std::dec << "\n";
+        delegate.waiter = nullptr;
         if (we_opened && !keep_connection) [device closeConnection];
         return false;
     }
 
-    // 3. Spin run loop until the delegate signals completion
-    NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_s];
-    while (![delegate isDone] &&
-           [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                                    beforeDate:deadline]) {
-        if ([[NSDate date] compare:deadline] != NSOrderedAscending) break;
-    }
+    // 3. Wait for delegate signal (no busy-loop)
+    //    IOBluetooth delivers the callback on its own thread, so cv works.
+    auto timeout_ms = std::chrono::milliseconds((int)(timeout_s * 1000));
+    bool signalled = sdp_waiter.wait(timeout_ms);
+    delegate.waiter = nullptr;
 
     bool ok = true;
-    if (![delegate isDone]) {
+    if (!signalled) {
         std::cerr << "  SDP query timed out (" << (int)timeout_s << "s).\n";
         ok = false;
     } else if ([delegate status] != kIOReturnSuccess) {
@@ -257,7 +282,7 @@ static bool perform_sdp_query(IOBluetoothDevice* device,
 // ─── SDP helper: find SPP RFCOMM channel ────────────────────────────────────
 
 static int sdp_find_spp_channel(IOBluetoothDevice* device,
-                                bool keep_connection = false) {
+                                bool keep_connection) {
     if (!perform_sdp_query(device, 15.0, keep_connection)) return -1;
 
     // SPP UUID: 00001101-0000-1000-8000-00805F9B34FB
@@ -303,6 +328,17 @@ extern "C" bt_macos_handle_t bt_macos_connect(const char* address, int channel) 
             std::cout << "  SDP: found SPP on RFCOMM channel " << ch << "\n";
         }
 
+        // Open baseband if not already connected
+        if (![device isConnected]) {
+            std::cout << "  Opening baseband connection...\n";
+            IOReturn bret = [device openConnection];
+            if (bret != kIOReturnSuccess) {
+                std::cerr << "  Baseband connect failed: 0x"
+                          << std::hex << bret << std::dec << "\n";
+                return nullptr;
+            }
+        }
+
         // Create pipe pair for RX bridging
         int pipefds[2];
         if (pipe(pipefds) < 0) {
@@ -318,7 +354,7 @@ extern "C" bt_macos_handle_t bt_macos_connect(const char* address, int channel) 
         // Create delegate
         handle->delegate = [[BtRfcommDelegate alloc] initWithHandle:handle];
 
-        // Open RFCOMM channel
+        // Open RFCOMM channel on the main thread
         IOBluetoothRFCOMMChannel* rfcommChannel = nil;
         std::cout << "  Connecting RFCOMM channel " << ch
                   << " on " << address << "...\n";
@@ -355,6 +391,8 @@ extern "C" void bt_macos_disconnect(bt_macos_handle_t h) {
     @autoreleasepool {
         auto* handle = (BtMacosHandle*)h;
 
+        handle->connected = false;
+
         if (handle->channel) {
             [handle->channel closeChannel];
             handle->channel = nil;
@@ -363,7 +401,6 @@ extern "C" void bt_macos_disconnect(bt_macos_handle_t h) {
             [handle->device closeConnection];
             handle->device = nil;
         }
-        handle->connected = false;
 
         if (handle->pipe_write >= 0) {
             close(handle->pipe_write);
@@ -410,14 +447,19 @@ extern "C" bool bt_macos_is_connected(bt_macos_handle_t h) {
     return ((BtMacosHandle*)h)->connected.load();
 }
 
+extern "C" void bt_macos_pump(void) {
+    @autoreleasepool {
+        // Process pending IOBluetooth delegate callbacks on the main
+        // thread's run loop.  Called from the bridge's select() loop.
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.001, true);
+    }
+}
+
 // ─── Device Inquiry Delegate (for scan) ─────────────────────────────────────
 
 @interface BtScanDelegate : NSObject <IOBluetoothDeviceInquiryDelegate>
-{
-    BOOL _done;
-}
 @property (nonatomic, strong) NSMutableArray<IOBluetoothDevice*>* devices;
-@property (nonatomic, readonly) BOOL isDone;
+@property (nonatomic, assign) Waiter* waiter;
 @end
 
 @implementation BtScanDelegate
@@ -426,12 +468,10 @@ extern "C" bool bt_macos_is_connected(bt_macos_handle_t h) {
     self = [super init];
     if (self) {
         _devices = [NSMutableArray new];
-        _done = NO;
+        _waiter  = nullptr;
     }
     return self;
 }
-
-- (BOOL)isDone { return _done; }
 
 - (void)deviceInquiryDeviceFound:(IOBluetoothDeviceInquiry*)sender
                           device:(IOBluetoothDevice*)device {
@@ -443,7 +483,7 @@ extern "C" bool bt_macos_is_connected(bt_macos_handle_t h) {
                         error:(IOReturn)error
                       aborted:(BOOL)aborted {
     (void)sender; (void)error; (void)aborted;
-    _done = YES;
+    if (_waiter) _waiter->signal();
 }
 
 @end
@@ -459,6 +499,9 @@ extern "C" void bt_macos_scan(double timeout_s) {
         [inquiry setInquiryLength:(uint8_t)std::min(timeout_s, 255.0)];
         [inquiry setUpdateNewDeviceNames:YES];
 
+        Waiter scan_waiter;
+        delegate.waiter = &scan_waiter;
+
         std::cout << "Scanning for Classic BT devices ("
                   << (int)timeout_s << "s)...\n\n";
 
@@ -467,16 +510,14 @@ extern "C" void bt_macos_scan(double timeout_s) {
             std::cerr << "Bluetooth inquiry start failed: 0x"
                       << std::hex << ret << std::dec << "\n"
                       << "Make sure Bluetooth is enabled in System Settings.\n";
+            delegate.waiter = nullptr;
             return;
         }
 
-        // Run the run loop until inquiry completes or timeout
-        NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_s + 2.0];
-        while (![delegate isDone] &&
-               [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                                        beforeDate:deadline]) {
-            if ([[NSDate date] compare:deadline] != NSOrderedAscending) break;
-        }
+        // Wait for inquiry completion (no busy-loop)
+        auto timeout_ms = std::chrono::milliseconds((int)((timeout_s + 2.0) * 1000));
+        scan_waiter.wait(timeout_ms);
+        delegate.waiter = nullptr;
         [inquiry stop];
 
         // Print results

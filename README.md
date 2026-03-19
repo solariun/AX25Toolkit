@@ -3017,7 +3017,7 @@ Classic BT does not need this — RFCOMM handles link maintenance natively.
 | BT scan | HCI inquiry (`hci_inquiry`) | `IOBluetoothDeviceInquiry` |
 | BT inspect (SDP) | BlueZ SDP API (`sdp_connect`) | `performSDPQuery` + `services` |
 | SPP channel detection | `sdp_service_search_attr_req` (UUID 0x1101) | `hasServiceFromArray:` + `getRFCOMMChannelID:` |
-| I/O model (BT) | RFCOMM socket fd → `select()` | Delegate callback → `pipe()` fd → `select()` |
+| I/O model (BT) | RFCOMM socket fd → `select()` | Delegate callback → `pipe()` fd → `select()` + `CFRunLoopRunInMode` pump |
 | Build dependency | `libbluetooth-dev` (`-lbluetooth`) | IOBluetooth.framework (built-in) |
 
 ### Automatic reconnection
