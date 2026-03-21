@@ -412,17 +412,15 @@ void ble_scan(double timeout_s) {
             found = [del.found copy];
         }
 
+        int shown = 0;
         for (CBPeripheral* p in found) {
-            std::cout << std::string(68, '-') << "\n";
-            std::cout << "  Name   : "
-                      << (p.name ? to_std(p.name) : "(no name)") << "\n";
-            std::cout << "  UUID   : " << to_std([p.identifier UUIDString]) << "\n";
-            std::cout << "\n";
+            if (!p.name || [p.name length] == 0) continue;
+            std::cout << to_std([p.identifier UUIDString])
+                      << "\t" << to_std(p.name) << "\n";
+            ++shown;
         }
-        std::cout << std::string(68, '=') << "\n";
-        std::cout << "Found " << found.count << " BLE device(s).\n";
-        std::cout << "\nNote: macOS uses CB UUIDs (not MAC addresses) for BLE devices.\n";
-        std::cout << "Next step:\n  bt_kiss_bridge --ble --inspect <UUID-or-Name>\n";
+        std::cout << "\nFound " << shown << " named BLE device(s)"
+                  << " (" << found.count << " total).\n";
     }
 }
 

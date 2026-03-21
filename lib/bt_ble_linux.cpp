@@ -1036,23 +1036,14 @@ void ble_scan(double timeout_s) {
     std::sort(found.begin(), found.end(),
               [](const DevInfo& a, const DevInfo& b){ return a.rssi > b.rssi; });
 
+    int shown = 0;
     for (auto& d : found) {
-        std::cout << std::string(68, '-') << "\n";
-        std::cout << "  Name   : " << (d.name.empty() ? "(no name)" : d.name) << "\n";
-        std::cout << "  Address: " << d.address << "\n";
-        std::cout << "  RSSI   : " << d.rssi << " dBm\n";
-        if (!d.uuids.empty()) {
-            std::cout << "  Services advertised:\n";
-            for (auto& u : d.uuids) {
-                std::cout << "    " << u
-                          << "  (" << uuid_short_name(u) << ")\n";
-            }
-        }
-        std::cout << "\n";
+        if (d.name.empty()) continue;
+        std::cout << d.address << "\t" << d.name << "\n";
+        ++shown;
     }
-    std::cout << std::string(68, '=') << "\n";
-    std::cout << "Found " << found.size() << " BLE device(s).\n";
-    std::cout << "\nNext step:\n  bt_kiss_bridge --ble --inspect <ADDRESS>\n";
+    std::cout << "\nFound " << shown << " named BLE device(s)"
+              << " (" << found.size() << " total).\n";
 
     dbus_connection_unref(conn);
 }

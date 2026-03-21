@@ -49,6 +49,10 @@ struct Waiter {
         std::lock_guard<std::mutex> lk(mtx);
         done = false;
     }
+    bool is_done() {
+        std::lock_guard<std::mutex> lk(mtx);
+        return done;
+    }
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -254,10 +258,14 @@ static bool perform_sdp_query(IOBluetoothDevice* device,
         return false;
     }
 
-    // 3. Wait for delegate signal (no busy-loop)
-    //    IOBluetooth delivers the callback on its own thread, so cv works.
-    auto timeout_ms = std::chrono::milliseconds((int)(timeout_s * 1000));
-    bool signalled = sdp_waiter.wait(timeout_ms);
+    // 3. Pump run loop so delegate callback is delivered
+    auto sdp_deadline = std::chrono::steady_clock::now()
+                      + std::chrono::milliseconds((int)(timeout_s * 1000));
+    while (!sdp_waiter.is_done() &&
+           std::chrono::steady_clock::now() < sdp_deadline) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+    }
+    bool signalled = sdp_waiter.is_done();
     delegate.waiter = nullptr;
 
     bool ok = true;
@@ -514,32 +522,30 @@ extern "C" void bt_macos_scan(double timeout_s) {
             return;
         }
 
-        // Wait for inquiry completion (no busy-loop)
-        auto timeout_ms = std::chrono::milliseconds((int)((timeout_s + 2.0) * 1000));
-        scan_waiter.wait(timeout_ms);
+        // Pump the main run loop so delegate callbacks are delivered
+        auto deadline = std::chrono::steady_clock::now()
+                      + std::chrono::milliseconds((int)((timeout_s + 2.0) * 1000));
+        while (!scan_waiter.is_done() &&
+               std::chrono::steady_clock::now() < deadline) {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+        }
         delegate.waiter = nullptr;
         [inquiry stop];
 
         // Print results
         NSArray<IOBluetoothDevice*>* found = delegate.devices;
+        int shown = 0;
         for (IOBluetoothDevice* dev in found) {
             NSString* name = [dev name];
             NSString* addr = [dev addressString];
-            BluetoothClassOfDevice cod = [dev classOfDevice];
-
-            std::cout << hr() << "\n";
-            std::cout << "  Name   : "
-                      << (name ? [name UTF8String] : "(unknown)") << "\n";
-            std::cout << "  Address: "
-                      << (addr ? [addr UTF8String] : "??") << "\n";
-            std::cout << "  CoD    : 0x" << std::hex << std::setw(6)
-                      << std::setfill('0') << cod << std::dec << "\n";
-            std::cout << "\n";
+            if (!name || [name length] == 0) continue;
+            std::cout << (addr ? [addr UTF8String] : "??")
+                      << "\t" << [name UTF8String] << "\n";
+            ++shown;
         }
 
-        std::cout << hr('=') << "\n";
-        std::cout << "Found " << [found count] << " Classic BT device(s).\n";
-        std::cout << "\nNext step:\n  bt_kiss_bridge --bt --inspect <ADDRESS>\n";
+        std::cout << "\nFound " << shown << " named Classic BT device(s)"
+                  << " (" << [found count] << " total).\n";
     }
 }
 

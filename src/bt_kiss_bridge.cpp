@@ -847,29 +847,22 @@ static void do_bt_scan(double timeout_s) {
         return;
     }
 
+    int shown = 0;
     for (int i = 0; i < num_rsp; i++) {
         char addr_str[19]{};
         ba2str(&ii[i].bdaddr, addr_str);
 
         char name[248]{};
         if (hci_read_remote_name(sock, &ii[i].bdaddr, sizeof(name), name, 0) < 0)
-            std::strcpy(name, "(unknown)");
+            continue;  // skip unnamed devices
+        if (name[0] == '\0') continue;
 
-        uint32_t cod = (ii[i].dev_class[2] << 16) |
-                       (ii[i].dev_class[1] << 8)  |
-                        ii[i].dev_class[0];
-
-        std::cout << hr() << "\n";
-        std::cout << "  Name   : " << name << "\n";
-        std::cout << "  Address: " << addr_str << "\n";
-        std::cout << "  CoD    : 0x" << std::hex << std::setw(6) << std::setfill('0')
-                  << cod << std::dec << "\n";
-        std::cout << "\n";
+        std::cout << addr_str << "\t" << name << "\n";
+        ++shown;
     }
 
-    std::cout << hr('=') << "\n";
-    std::cout << "Found " << num_rsp << " Classic BT device(s).\n";
-    std::cout << "\nNext step:\n  bt_kiss_bridge --bt --inspect <ADDRESS>\n";
+    std::cout << "\nFound " << shown << " named Classic BT device(s)"
+              << " (" << num_rsp << " total).\n";
 
     bt_free(ii);
     close(sock);
