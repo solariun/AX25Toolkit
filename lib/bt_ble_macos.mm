@@ -505,15 +505,16 @@ void ble_scan(double timeout_s) {
             found = [del.found copy];
         }
 
-        int shown = 0;
+        int named = 0;
         for (CBPeripheral* p in found) {
-            if (!p.name || [p.name length] == 0) continue;
+            std::string name = (p.name && [p.name length] > 0)
+                             ? to_std(p.name) : "(no name)";
             std::cout << to_std([p.identifier UUIDString])
-                      << "\t" << to_std(p.name) << "\n";
-            ++shown;
+                      << "\t" << name << "\n";
+            if (p.name && [p.name length] > 0) ++named;
         }
-        std::cout << "\nFound " << shown << " named BLE device(s)"
-                  << " (" << found.count << " total).\n";
+        std::cout << "\nFound " << (int)found.count << " BLE device(s)"
+                  << " (" << named << " named).\n";
     }
 }
 

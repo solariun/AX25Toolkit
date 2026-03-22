@@ -1105,16 +1105,15 @@ void ble_scan(double timeout_s) {
     std::sort(found.begin(), found.end(),
               [](const DevInfo& a, const DevInfo& b){ return a.rssi > b.rssi; });
 
-    int shown = 0;
+    int named = 0;
     for (auto& d : found) {
-        if (d.name.empty()) continue;
         std::cout << d.address << "\t"
                   << std::setw(4) << d.rssi << " dBm\t"
-                  << d.name << "\n";
-        ++shown;
+                  << (d.name.empty() ? "(no name)" : d.name) << "\n";
+        if (!d.name.empty()) ++named;
     }
-    std::cout << "\nFound " << shown << " named BLE device(s)"
-              << " (" << found.size() << " total).\n";
+    std::cout << "\nFound " << found.size() << " BLE device(s)"
+              << " (" << named << " named).\n";
 
     dbus_connection_unref(conn);
 }
