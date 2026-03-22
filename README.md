@@ -37,10 +37,14 @@ Before connecting `bt_kiss_bridge`, the radio must be configured correctly.
 The most common reason for a working BLE connection that produces no RF
 transmission is incorrect radio settings.
 
-> **Three settings must be correct for BLE KISS TNC operation:**
+> **Required radio settings for BLE KISS TNC operation:**
 > 1. **KISS TNC mode** — ON
 > 2. **Digital Mode** — OFF
-> 3. **Lock Channel Data** — ON
+> 3. **Upload Message** — ON
+> 4. **Bandwidth** — Wide (25 kHz)
+> 5. **Scan** — OFF
+> 6. **Talkaround** — OFF
+> 7. **Pre/De-emphasis** — OFF
 
 ### Why each setting matters
 
@@ -48,7 +52,11 @@ transmission is incorrect radio settings.
 |---------|-------------|-----------------|
 | **KISS TNC** | Tells the radio to interpret data received via BLE as KISS-framed AX.25 and route it to the RF modem | Radio ignores BLE data entirely |
 | **Digital Mode** | Uses the audio DSP for digital voice codecs (DMR, C4FM, etc.) | Conflicts with KISS TNC — the same DSP hardware cannot do both; TNC frames are silently discarded |
-| **Lock Channel Data** | Locks the channel for data-only use; the radio automatically keys PTT when a KISS frame arrives via BLE | Radio receives the BLE frames but never keys PTT — no RF transmission |
+| **Upload Message** | Enables uploading/forwarding of received packet data | Radio may not forward decoded packets |
+| **Bandwidth** | Sets channel bandwidth; Wide (25 kHz) is required for 1200-baud AFSK packet | Narrow (12.5 kHz) clips the AFSK tones (1200/2200 Hz), causing decode errors |
+| **Scan** | Scans through channels looking for activity | Radio may be on wrong frequency when a KISS frame arrives for TX |
+| **Talkaround** | Bypasses repeater offset, transmits on RX frequency | May cause TX on wrong frequency if a repeater offset is configured |
+| **Pre/De-emphasis** | Audio filters designed for FM voice | Distorts AFSK data tones, causing decode errors on RX and TX |
 
 ### Vero VR-N76 and VR-N7600
 
@@ -58,16 +66,14 @@ KISS TNC accessible over a BLE UART service.
 **Per-channel configuration** (settings are stored per memory channel):
 
 1. Open the channel you want to use for packet radio.
-2. In the channel settings, locate **Digital Mode** and set it to **OFF**.
-   Digital mode uses the same DSP pipeline as the KISS TNC — they are
-   mutually exclusive. Running both simultaneously results in silent
-   frame loss on the TNC path.
-3. Locate **KISS TNC** and set it to **ON** (sometimes labelled "TNC Mode"
-   or "Packet Mode"). This activates the BLE data interface.
-4. Locate **Lock Channel Data** (sometimes "CH Lock Data" or "Data Lock")
-   and set it to **ON**. This is the gating signal for automatic PTT —
-   without it the radio receives the BLE data but never transmits.
-5. Save the channel configuration.
+2. Set **KISS TNC** → **ON** (sometimes labelled "TNC Mode" or "Packet Mode").
+3. Set **Digital Mode** → **OFF** (mutually exclusive with KISS TNC).
+4. Set **Upload Message** → **ON**.
+5. Set **Bandwidth** → **Wide** (25 kHz).
+6. Set **Scan** → **OFF**.
+7. Set **Talkaround** → **OFF**.
+8. Set **Pre/De-emphasis** → **OFF**.
+9. Save the channel configuration.
 
 **BLE service UUIDs (both models):**
 
@@ -89,22 +95,39 @@ Write    : 00000003-ba2a-46c9-ae49-01b0961f68bb  (write + write-without-response
 ./bt_kiss_bridge --ble --device 38:D2:XX:XX:XX:XX --monitor
 ```
 
+**Linux BLE pairing (required for TX):**
+
+BLE TX requires an encrypted LE bond. Without it, the radio receives
+write commands but silently discards the data — no PTT, no RF.
+`bt_kiss_bridge` will warn if the bond is missing (`paired=no bonded=no`).
+
+```bash
+bluetoothctl remove 38:D2:XX:XX:XX:XX    # clear stale pairing
+bluetoothctl scan le                       # LE-specific scan
+# wait for device to appear
+bluetoothctl pair 38:D2:XX:XX:XX:XX       # creates LE bond (LTK)
+bluetoothctl scan off
+bluetoothctl trust 38:D2:XX:XX:XX:XX
+```
+
+> **Important:** use `scan le` (not `scan on`) to ensure the pairing
+> creates an LE Long Term Key (LTK). Classic BT pairing (`scan on`)
+> creates a BR/EDR link key which does NOT encrypt the BLE connection.
+
 ### Retevis / Radioddity GA-5WB
 
 The GA-5WB is a BLE-equipped handheld with an embedded KISS TNC. It shares
 the same BLE UART service UUIDs as the VR-N76/VR-N7600.
 
-**Per-channel configuration:**
+**Per-channel configuration** (same settings as VR-N76/VR-N7600):
 
-1. Select the channel you want to use for packet.
-2. Set **Digital Mode** → **OFF**. The GA-5WB cannot run digital voice
-   and KISS TNC simultaneously on the same channel.
-3. Set **KISS TNC** (or "TNC Mode") → **ON**.
-4. Set **Lock Channel Data** → **ON**.
-   This is the most commonly missed setting. Without it, the radio
-   silently receives KISS frames from BLE but never keys the PA —
-   confirmed: SDR# shows zero RF even though the bridge reports frames sent.
-5. Confirm the radio shows a data-mode indicator on screen (varies by firmware).
+1. Set **KISS TNC** → **ON**.
+2. Set **Digital Mode** → **OFF**.
+3. Set **Upload Message** → **ON**.
+4. Set **Bandwidth** → **Wide** (25 kHz).
+5. Set **Scan** → **OFF**.
+6. Set **Talkaround** → **OFF**.
+7. Set **Pre/De-emphasis** → **OFF**.
 
 **BLE service UUIDs:** same as VR-N76 above.
 
