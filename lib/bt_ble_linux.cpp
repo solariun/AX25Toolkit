@@ -1624,11 +1624,10 @@ void ble_write(ble_handle_t handle, const uint8_t* data, size_t len) {
     auto* h = static_cast<BleLinuxHandle*>(handle);
     if (!h->connected) return;
 
-    // Send in chunks (--mtu N) or as a single write (no --mtu)
-    int cs = h->chunk_sz;           // 0 = no chunking
-    size_t step = (cs > 0) ? (size_t)cs : len;
-    for (size_t off = 0; off < len; off += step) {
-        size_t clen = std::min(step, len - off);
+    // Chunk and send via dedicated write connection (thread-safe)
+    int cs = h->chunk_sz;
+    for (size_t off = 0; off < len; off += (size_t)cs) {
+        size_t clen = std::min((size_t)cs, len - off);
         if (!gatt_write_value_async(h->conn_write, h->write_char_path,
                                      data + off, clen, h->use_response)) {
             std::cerr << "  BLE write failed (chunk " << off << "+" << clen

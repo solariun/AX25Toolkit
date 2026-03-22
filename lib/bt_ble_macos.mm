@@ -748,24 +748,18 @@ ble_handle_t ble_connect(const char* address,
         bool can_wr = (writeChr.properties & CBCharacteristicPropertyWrite) != 0;
         h->use_response = write_with_response ? true : (!h->can_wwr && can_wr);
 
-        // MTU
-        // maximumWriteValueLengthForType already returns the usable payload size
+        // MTU — always chunk based on negotiated MTU (same as SimpleBLE).
+        // maximumWriteValueLengthForType returns the usable payload size
         // (CoreBluetooth subtracts the 3-byte ATT header internally).
-        // mtu_val is stored as ATT MTU (payload + 3) for display only.
-        // chunk_sz:
-        //   0          (no --mtu): write entire frame in one call — let
-        //              CoreBluetooth / the radio handle fragmentation
-        //   N > 0      (--mtu N): split into N-byte chunks
         NSUInteger maxWrite = [target maximumWriteValueLengthForType:
             CBCharacteristicWriteWithoutResponse];
         h->mtu_val  = (int)(maxWrite + 3);      // ATT MTU (display)
         if (h->mtu_val < 23) h->mtu_val = 23;
-        h->chunk_sz = mtu_cap > 0 ? std::max(1, mtu_cap) : 0;  // 0 = no chunking
+        h->chunk_sz = std::max(1, std::min(mtu_cap > 0 ? mtu_cap : 517,
+                                           h->mtu_val) - 3);
 
         std::cout << "  Connected.  MTU=" << h->mtu_val
-                  << (h->chunk_sz > 0
-                        ? "  chunk=" + std::to_string(h->chunk_sz) + "b"
-                        : "  chunk=auto")
+                  << "  chunk=" << h->chunk_sz << "b"
                   << "  wwr=" << (h->can_wwr ? "yes" : "no")
                   << "  response=" << (h->use_response ? "yes" : "no") << "\n";
         std::cout.flush();
@@ -857,10 +851,9 @@ void ble_write(ble_handle_t handle, const uint8_t* data, size_t len) {
         ? CBCharacteristicWriteWithResponse
         : CBCharacteristicWriteWithoutResponse;
 
-    int cs = h->chunk_sz;  // 0 = no chunking (single write)
-    size_t step = (cs > 0) ? (size_t)cs : len;
-    for (size_t off = 0; off < len; off += step) {
-        size_t clen = std::min(step, len - off);
+    int cs = h->chunk_sz;
+    for (size_t off = 0; off < len; off += (size_t)cs) {
+        size_t clen = std::min((size_t)cs, len - off);
         NSData* chunk = [NSData dataWithBytes:(data + off) length:clen];
         // Dispatch on CB queue — required by CoreBluetooth (same as SimpleBLE)
         dispatch_async(h->queue, ^{
