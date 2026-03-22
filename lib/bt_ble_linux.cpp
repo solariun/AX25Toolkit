@@ -1603,7 +1603,11 @@ ble_handle_t ble_connect(const char* address,
     if (!paired || !bonded) {
         std::cerr << "  WARNING: BLE link not encrypted (no LE bond).\n"
                   << "           TX may be silently dropped by the peripheral.\n"
-                  << "           Fix: bluetoothctl pair " << address << "\n";
+                  << "           Fix:  bluetoothctl remove " << address << "\n"
+                  << "                 bluetoothctl scan le\n"
+                  << "                 bluetoothctl pair " << address << "\n"
+                  << "                 bluetoothctl scan off\n"
+                  << "                 bluetoothctl trust " << address << "\n";
     }
     std::cout.flush();
 
