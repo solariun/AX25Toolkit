@@ -238,16 +238,14 @@ else
     cd "${INSTALL_DIR}"
 fi
 
-info "Building core binaries..."
-make -j"$(nproc)" bbs ax25kiss ax25tnc basic_tool
-success "Core binaries built"
-
-info "Building BT bridge..."
-if make -j"$(nproc)" bt_kiss_bridge; then
-    success "BT KISS bridge built"
+info "Building all applications..."
+if make -j"$(nproc)" all; then
+    success "All applications built"
     BLE_BRIDGE_BUILT=1
 else
-    warn "BT KISS bridge build failed — this is optional, continuing"
+    warn "Full build failed — trying core binaries only"
+    make -j"$(nproc)" bbs ax25kiss ax25tnc ax25sim ax25send basic_tool
+    success "Core binaries built (bt_kiss_bridge/bt_sniffer skipped)"
     BLE_BRIDGE_BUILT=0
 fi
 
@@ -447,18 +445,13 @@ echo -e "${BOLD}Config:${RESET}         ${BBS_INI}"
 echo -e "${BOLD}AX.25 ports:${RESET}    ${AXPORTS_FILE}"
 echo ""
 echo -e "${BOLD}Installed binaries:${RESET}"
-for bin in bbs ax25kiss ax25tnc basic_tool; do
+for bin in bbs ax25kiss ax25tnc ax25sim ax25send basic_tool bt_kiss_bridge bt_sniffer; do
     if [[ -f "${BIN_DIR}/${bin}" ]]; then
         echo -e "  ${GREEN}✓${RESET} ${bin}"
     else
-        echo -e "  ${RED}✗${RESET} ${bin}"
+        echo -e "  ${YELLOW}○${RESET} ${bin} (not built)"
     fi
 done
-if [[ -f "${BIN_DIR}/bt_kiss_bridge" ]]; then
-    echo -e "  ${GREEN}✓${RESET} bt_kiss_bridge"
-else
-    echo -e "  ${YELLOW}○${RESET} bt_kiss_bridge (not built)"
-fi
 
 echo ""
 echo -e "${BOLD}Systemd services:${RESET}"
