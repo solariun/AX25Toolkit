@@ -182,6 +182,9 @@ struct NotifyWaiter {
 @property (nonatomic, strong) CBPeripheral* target;
 @property (nonatomic, assign) int discoveredServices;
 @property (nonatomic, assign) int resolvedChars;
+@property (nonatomic, assign) int totalChars;
+@property (nonatomic, assign) int resolvedDescs;
+@property (nonatomic, assign) BOOL discoverDescriptors;
 @end
 
 @implementation BleDelegate
@@ -273,9 +276,37 @@ didDiscoverServices:(NSError*)error
 didDiscoverCharacteristicsForService:(CBService*)service
              error:(NSError*)error
 {
-    (void)error; (void)service;
+    (void)error;
     _resolvedChars++;
     if (_resolvedChars >= _discoveredServices) {
+        if (_discoverDescriptors) {
+            // Count total characteristics and discover descriptors
+            _totalChars = 0;
+            _resolvedDescs = 0;
+            for (CBService* svc in peripheral.services)
+                _totalChars += (int)svc.characteristics.count;
+            if (_totalChars == 0) {
+                _servicesResolved = YES;
+                if (_semaphore) dispatch_semaphore_signal(_semaphore);
+                return;
+            }
+            for (CBService* svc in peripheral.services)
+                for (CBCharacteristic* chr in svc.characteristics)
+                    [peripheral discoverDescriptorsForCharacteristic:chr];
+        } else {
+            _servicesResolved = YES;
+            if (_semaphore) dispatch_semaphore_signal(_semaphore);
+        }
+    }
+}
+
+- (void)peripheral:(CBPeripheral*)peripheral
+didDiscoverDescriptorsForCharacteristic:(CBCharacteristic*)characteristic
+             error:(NSError*)error
+{
+    (void)peripheral; (void)characteristic; (void)error;
+    _resolvedDescs++;
+    if (_resolvedDescs >= _totalChars) {
         _servicesResolved = YES;
         if (_semaphore) dispatch_semaphore_signal(_semaphore);
     }
@@ -523,6 +554,7 @@ void ble_inspect(const char* address, double timeout_s) {
         std::cout.flush();
 
         del.servicesResolved = NO;
+        del.discoverDescriptors = YES;  // inspect needs descriptors
         del.didConnect = NO;
         del.didFail = NO;
         [mgr connectPeripheral:target options:nil];
@@ -536,7 +568,7 @@ void ble_inspect(const char* address, double timeout_s) {
             return;
         }
 
-        // Wait for services resolved
+        // Wait for services + descriptors resolved
         if (!del.servicesResolved) {
             dispatch_semaphore_wait(sem,
                 dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
