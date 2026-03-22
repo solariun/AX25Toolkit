@@ -1588,10 +1588,23 @@ ble_handle_t ble_connect(const char* address,
     h->chunk_sz = std::max(1, std::min(mtu_cap > 0 ? mtu_cap : 517,
                                        (int)mtu_val) - 3);
 
+    // Check BLE bonding/encryption status
+    bool paired = dbus_get_bool_prop(conn, dev_path.c_str(),
+                                      "org.bluez.Device1", "Paired");
+    bool bonded = dbus_get_bool_prop(conn, dev_path.c_str(),
+                                      "org.bluez.Device1", "Bonded");
+
     std::cout << "  Connected.  MTU=" << mtu_val
               << "  chunk=" << h->chunk_sz << "b"
               << "  wwr=" << (h->can_wwr ? "yes" : "no")
-              << "  response=" << (h->use_response ? "yes" : "no") << "\n";
+              << "  response=" << (h->use_response ? "yes" : "no")
+              << "  paired=" << (paired ? "yes" : "no")
+              << "  bonded=" << (bonded ? "yes" : "no") << "\n";
+    if (!paired || !bonded) {
+        std::cerr << "  WARNING: BLE link not encrypted (no LE bond).\n"
+                  << "           TX may be silently dropped by the peripheral.\n"
+                  << "           Fix: bluetoothctl pair " << address << "\n";
+    }
     std::cout.flush();
 
     // Create pipe
