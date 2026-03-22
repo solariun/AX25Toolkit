@@ -1493,15 +1493,12 @@ ble_handle_t ble_connect(const char* address,
     }
     if (mtu_val == 0) mtu_val = 23; // fallback
     h->mtu_val = mtu_val;
-    // chunk_sz:
-    //   0     (no --mtu): single write per frame — let BlueZ handle fragmentation
-    //   N > 0 (--mtu N): split into N-byte chunks
-    h->chunk_sz = mtu_cap > 0 ? std::max(1, mtu_cap) : 0;
+    // Always chunk based on negotiated MTU (same as SimpleBLE).
+    h->chunk_sz = std::max(1, std::min(mtu_cap > 0 ? mtu_cap : 517,
+                                       (int)mtu_val) - 3);
 
     std::cout << "  Connected.  MTU=" << mtu_val
-              << (h->chunk_sz > 0
-                    ? "  chunk=" + std::to_string(h->chunk_sz) + "b"
-                    : "  chunk=auto")
+              << "  chunk=" << h->chunk_sz << "b"
               << "  wwr=" << (h->can_wwr ? "yes" : "no")
               << "  response=" << (h->use_response ? "yes" : "no") << "\n";
     std::cout.flush();
