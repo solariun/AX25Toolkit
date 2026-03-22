@@ -854,7 +854,7 @@ void Router::route(std::vector<uint8_t> raw, Millis now) {
 // =============================================================================
 void tnc_kiss_init(int fd) {
     std::cerr << "[TNC] Sending KISS initialization commands...\n";
-    const char* cmds[] = { "KISS ON\r\n", "RESTART\r\n", "INTERFACE KISS\r\n", "RESET\r\n" };
+    const char* cmds[] = { "KISS ON\n", "RESTART\n", "INTERFACE KISS\n", "RESET\n" };
     for (const char* c : cmds) {
         ::write(fd, c, ::strlen(c));
         ::usleep(100000); // 100 ms between commands

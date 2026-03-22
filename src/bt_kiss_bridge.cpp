@@ -1077,7 +1077,7 @@ static void test_hex_dump(const uint8_t* data, size_t len) {
 static void send_tnc_init(RadioTransport& transport, int txdelay_ms = 400,
                            int persist = 63, int slottime_ms = 100) {
     std::cout << "  [TNC-INIT] Sending text wake-up commands...\n";
-    const char* text_cmds[] = { "KISS ON\r", "RESTART\r", "INTERFACE KISS\r", "RESET\r" };
+    const char* text_cmds[] = { "KISS ON\n", "RESTART\n", "INTERFACE KISS\n", "RESET\n" };
     for (const char* cmd : text_cmds) {
         std::cout << "  [TNC-INIT]   " << std::string(cmd, ::strlen(cmd) - 1) << "\n";
         std::cout.flush();
@@ -1093,6 +1093,8 @@ static void send_tnc_init(RadioTransport& transport, int txdelay_ms = 400,
         { "TXDELAY",     0x01, (uint8_t)(txdelay_ms  / 10) },
         { "PERSISTENCE", 0x02, (uint8_t) persist           },
         { "SLOTTIME",    0x03, (uint8_t)(slottime_ms / 10) },
+        { "TX_TAIL",     0x04, 1                           },  // 10 ms
+        { "FULL_DUPLEX", 0x05, 0                           },  // half-duplex
     };
     std::cout << "  [TNC-INIT] Sending KISS parameters...\n";
     for (auto& p : params) {
