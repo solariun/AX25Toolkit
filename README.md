@@ -1,4 +1,4 @@
-# KISSBBS — AX.25 / KISS Library (C++11, Linux + macOS)
+# AX25Toolkit — AX.25 / KISS Library (C++11, Linux + macOS)
 
 [![CI](https://github.com/solariun/KISSBBS/actions/workflows/ci.yml/badge.svg)](https://github.com/solariun/KISSBBS/actions/workflows/ci.yml)
 
