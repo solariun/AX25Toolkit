@@ -172,7 +172,7 @@ struct AppCfg {
     Config      ax25;                     // ax25lib Config (mycall, mtu, etc.)
     int         baud     = 9600;
     std::string script;                   // BASIC script name/path/pattern (-s); empty = interactive
-    ScriptFinder scripts;                 // script search paths (--bas-path, KISSBBS_BASIC_PATH)
+    ScriptFinder scripts;                 // script search paths (--bas-path, AX25TK_BASIC_PATH)
     int         ka_ms    = 60000;         // app-level keep-alive interval ms (0=off)
     bool        debug    = false;         // verbose routing debug output (-D)
 };

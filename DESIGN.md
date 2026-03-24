@@ -1,4 +1,4 @@
-# KISSBBS — Design & Architecture Reference
+# AX25Toolkit — Design & Architecture Reference
 
 > This document is the engineering reference for contributors. It covers protocol background,
 > internal architecture, class relationships, state machines, and design rationale.

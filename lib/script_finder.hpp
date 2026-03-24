@@ -3,7 +3,7 @@
 //
 // Resolves script paths using a priority search order:
 //   1. --bas-path CLI option (highest priority)
-//   2. KISSBBS_BASIC_PATH environment variable
+//   2. AX25TK_BASIC_PATH environment variable
 //   3. Application-specific default directory (e.g. "." or from config)
 //
 // Name resolution (resolve_script):
@@ -14,8 +14,8 @@
 //
 // Usage:
 //   ScriptFinder finder;
-//   finder.add_search_path("/home/user/.kissbbs/scripts");  // from --bas-path
-//   finder.add_search_path(getenv("KISSBBS_BASIC_PATH"));   // from env
+//   finder.add_search_path("/home/user/.ax25toolkit/scripts");  // from --bas-path
+//   finder.add_search_path(getenv("AX25TK_BASIC_PATH"));   // from env
 //   finder.add_search_path(".");                             // fallback default
 //
 //   auto scripts = finder.find("sim.*");         // regex match
@@ -37,8 +37,8 @@ class ScriptFinder {
 public:
     // ── Construction ─────────────────────────────────────────────────────
     ScriptFinder() {
-        // Auto-load KISSBBS_BASIC_PATH from environment
-        const char* env = std::getenv("KISSBBS_BASIC_PATH");
+        // Auto-load AX25TK_BASIC_PATH from environment
+        const char* env = std::getenv("AX25TK_BASIC_PATH");
         if (env && env[0]) env_path_ = env;
     }
 
@@ -166,7 +166,7 @@ public:
 
 private:
     std::vector<std::string> cli_paths_;   // from --bas-path (highest priority)
-    std::string              env_path_;    // from KISSBBS_BASIC_PATH
+    std::string              env_path_;    // from AX25TK_BASIC_PATH
     std::string              default_dir_; // app-specific default
 
     // Scan a directory for .bas files optionally matching a regex pattern.

@@ -1,7 +1,7 @@
 // =============================================================================
 // ax25sim.cpp — AX.25 / KISS TNC Simulator  (C++11, POSIX)
 //
-// Creates a PTY-based virtual serial port so other KISSBBS tools (bbs, ax25tnc)
+// Creates a PTY-based virtual serial port so other AX25Toolkit tools (bbs, ax25tnc)
 // can connect to it for testing without real radio hardware.
 //
 // The simulator provides an interactive TNC-style terminal with:
@@ -743,7 +743,7 @@ static bool parse_args(int argc, char* argv[], SimCfg& cfg) {
                       << "  -p PATH         Digipeater path (comma-separated)\n"
                       << "  -h              Show this help\n\n"
                       << "Environment:\n"
-                      << "  KISSBBS_BASIC_PATH   Default script search directory\n";
+                      << "  AX25TK_BASIC_PATH   Default script search directory\n";
             return false;
         default:
             return false;

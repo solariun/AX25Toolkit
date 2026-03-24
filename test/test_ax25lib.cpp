@@ -741,7 +741,7 @@ TEST(Timers, T1RetransmitReachesLinkFailed) {
 // =============================================================================
 TEST(IniConfig, LoadFromString) {
     // Write a temp INI file
-    const char* path = "/tmp/test_kissbbs.ini";
+    const char* path = "/tmp/test_ax25tk.ini";
     {
         FILE* f = fopen(path, "w");
         ASSERT_NE(f, nullptr);
@@ -758,11 +758,11 @@ TEST(IniConfig, LoadFromString) {
 
 TEST(IniConfig, MissingFile) {
     IniConfig cfg;
-    EXPECT_FALSE(cfg.load("/tmp/nonexistent_kissbbs_12345.ini"));
+    EXPECT_FALSE(cfg.load("/tmp/nonexistent_ax25tk_12345.ini"));
 }
 
 TEST(IniConfig, Comments) {
-    const char* path = "/tmp/test_kissbbs_comments.ini";
+    const char* path = "/tmp/test_ax25tk_comments.ini";
     {
         FILE* f = fopen(path, "w");
         ASSERT_NE(f, nullptr);
@@ -776,7 +776,7 @@ TEST(IniConfig, Comments) {
 }
 
 TEST(IniConfig, BoolAndDouble) {
-    const char* path = "/tmp/test_kissbbs_types.ini";
+    const char* path = "/tmp/test_ax25tk_types.ini";
     {
         FILE* f = fopen(path, "w");
         ASSERT_NE(f, nullptr);

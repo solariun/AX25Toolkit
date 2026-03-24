@@ -1,5 +1,5 @@
 # =============================================================================
-# Makefile — KISSBBS project
+# Makefile — AX25Toolkit project
 # =============================================================================
 CXX      ?= g++
 CXXFLAGS  = -std=c++11 -O2 -Wall -Wextra -Wpedantic -Ilib
@@ -172,7 +172,7 @@ clean:
 
 # ── Install / Uninstall ────────────────────────────────────────────────────
 # Installs binaries to $(PREFIX)/bin (default: /usr/local/bin)
-# and scripts+config to ~/.kissbbs
+# and scripts+config to ~/.ax25toolkit
 # Override prefix:  make install PREFIX=/usr
 install:
 	@echo "Installing binaries to $(INSTALLDIR) ..."
@@ -186,12 +186,12 @@ install:
 	install -m 755 $(BINDIR)/bt_kiss_bridge $(INSTALLDIR)/bt_kiss_bridge
 	install -m 755 $(BINDIR)/bt_sniffer     $(INSTALLDIR)/bt_sniffer
 	ln -sf bt_kiss_bridge $(INSTALLDIR)/ble_kiss_bridge
-	@echo "Installing config and scripts to ~/.kissbbs ..."
-	@mkdir -p $(HOME)/.kissbbs/scripts
-	@cp -n etc/bbs.ini $(HOME)/.kissbbs/bbs.ini 2>/dev/null || true
-	@cp etc/kiss_exit.sh $(HOME)/.kissbbs/kiss_exit.sh
-	@cp etc/ble_kiss_monitor.py $(HOME)/.kissbbs/ble_kiss_monitor.py
-	@cp scripts/*.bas $(HOME)/.kissbbs/scripts/ 2>/dev/null || true
+	@echo "Installing config and scripts to ~/.ax25toolkit ..."
+	@mkdir -p $(HOME)/.ax25toolkit/scripts
+	@cp -n etc/bbs.ini $(HOME)/.ax25toolkit/bbs.ini 2>/dev/null || true
+	@cp etc/kiss_exit.sh $(HOME)/.ax25toolkit/kiss_exit.sh
+	@cp etc/ble_kiss_monitor.py $(HOME)/.ax25toolkit/ble_kiss_monitor.py
+	@cp scripts/*.bas $(HOME)/.ax25toolkit/scripts/ 2>/dev/null || true
 	@echo "Done."
 
 uninstall:
@@ -231,6 +231,6 @@ help:
 	@echo "  bt_sniffer     KISS proxy tap for bridge debugging"
 	@echo "  test           Build and run test suite"
 	@echo "  clean          Remove build/ and bin/"
-	@echo "  install        Install to $(PREFIX)/bin + ~/.kissbbs"
+	@echo "  install        Install to $(PREFIX)/bin + ~/.ax25toolkit"
 	@echo "  uninstall      Remove installed binaries"
 	@echo "  install-deps   Show dependency install commands"

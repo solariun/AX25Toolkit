@@ -1,5 +1,5 @@
 ' =============================================================================
-' welcome.bas — KISSBBS welcome script  (QBASIC dialect)
+' welcome.bas — AX25Toolkit welcome script  (QBASIC dialect)
 ' Pre-filled vars: bbs_name$, callsign$, db_path$
 ' =============================================================================
 

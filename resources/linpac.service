@@ -1,0 +1,14 @@
+[Unit]
+Description=LinPac AX.25 Packet Radio Terminal
+After=network.target bluetooth.target
+Wants=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/linpac -d
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

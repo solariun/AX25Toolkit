@@ -1,6 +1,6 @@
 # AX25Toolkit — AX.25 / KISS Library (C++11, Linux + macOS)
 
-[![CI](https://github.com/solariun/KISSBBS/actions/workflows/ci.yml/badge.svg)](https://github.com/solariun/KISSBBS/actions/workflows/ci.yml)
+[![CI](https://github.com/solariun/AX25Toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/solariun/AX25Toolkit/actions/workflows/ci.yml)
 
 A self-contained C++11 library implementing the AX.25 amateur-radio link-layer
 protocol over KISS-mode TNCs.  Includes a full-featured BBS with INI config,
@@ -15,8 +15,8 @@ remote shell access, an interactive KISS terminal, and a comprehensive GoogleTes
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/solariun/KISSBBS
-cd KISSBBS
+git clone https://github.com/solariun/AX25Toolkit
+cd AX25Toolkit
 
 # 2. Install build dependencies
 #    macOS
@@ -304,13 +304,13 @@ and clone firmwares.
 
 ## Linux BBS Installation — One-Command Setup
 
-KISSBBS provides a complete automated installer that turns any Linux box
+AX25Toolkit provides a complete automated installer that turns any Linux box
 (Raspberry Pi, Pi Zero, Ubuntu, Debian) into a fully operational AX.25 BBS
 station.  Fully compatible with **Raspberry Pi** (all models including
 **Pi Zero / Pi Zero W**) — perfect for building a portable, low-power packet
 radio station.
 
-### Why KISSBBS?
+### Why AX25Toolkit?
 
 | Tool | Role |
 |------|------|
@@ -380,8 +380,8 @@ radio station.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/solariun/KISSBBS
-cd KISSBBS
+git clone https://github.com/solariun/AX25Toolkit
+cd AX25Toolkit
 
 # 2. Edit the configuration section at the top of the script
 #    (callsign, SSID, BLE device MAC, etc.)
@@ -393,17 +393,17 @@ sudo bash resources/install_linux_bbs.sh
 
 The installer will:
 1. Install all system packages (build tools, AX.25 stack, Bluetooth, linpac)
-2. Build and install all KISSBBS binaries
+2. Build and install all AX25Toolkit binaries
 3. Configure the AX.25 port in `/etc/ax25/axports`
 4. Generate `bbs.ini` with your station settings
 5. Create four **systemd services** (all **disabled** by default):
 
 | Service | Description |
 |---------|-------------|
-| `kissbbs-ble-bridge` | BLE/BT KISS bridge — connects your Bluetooth radio |
-| `kissbbs-kissattach` | Attaches the KISS PTY to the AX.25 kernel stack |
-| `kissbbs-bbs`        | The KISSBBS BBS server |
-| `kissbbs-linpac`     | Linpac AX.25 terminal (daemon mode) |
+| `ax25tk-ble-bridge` | BLE/BT KISS bridge — connects your Bluetooth radio |
+| `ax25tk-kissattach` | Attaches the KISS PTY to the AX.25 kernel stack |
+| `ax25tk-bbs`        | The AX25Toolkit BBS server |
+| `ax25tk-linpac`     | Linpac AX.25 terminal (daemon mode) |
 
 ### Enabling services
 
@@ -412,18 +412,18 @@ live.  Enable them in order:
 
 ```bash
 # 1. Start the BLE bridge (if using Bluetooth radio)
-sudo systemctl enable --now kissbbs-ble-bridge
+sudo systemctl enable --now ax25tk-ble-bridge
 
 # 2. Attach KISS to the AX.25 stack
-sudo systemctl enable --now kissbbs-kissattach
+sudo systemctl enable --now ax25tk-kissattach
 
 # 3. Start the BBS (or linpac, or both)
-sudo systemctl enable --now kissbbs-bbs
-sudo systemctl enable --now kissbbs-linpac   # optional — linpac terminal
+sudo systemctl enable --now ax25tk-bbs
+sudo systemctl enable --now ax25tk-linpac   # optional — linpac terminal
 
 # View logs
-journalctl -u kissbbs-ble-bridge -f
-journalctl -u kissbbs-bbs -f
+journalctl -u ax25tk-ble-bridge -f
+journalctl -u ax25tk-bbs -f
 ```
 
 > **Tip:** `ax25tnc` is also installed and can be used standalone for direct
@@ -500,14 +500,14 @@ and full AX.25 ARQ state machines.  Each caller gets an independent session.
 ./bin/bbs -C bbs.ini
 
 # One-shot modes (send and exit):
-./bin/bbs -c W1BBS-1 --aprs "!2330.00S/04636.00W>KISSBBS on the air" /tmp/kiss
-./bin/bbs -c W1BBS-1 --pos -23.50,-46.60 "KISSBBS on the air" /tmp/kiss
-./bin/bbs -c W1BBS-1 --msg G2UGK "Hello from KISSBBS" /tmp/kiss
+./bin/bbs -c W1BBS-1 --aprs "!2330.00S/04636.00W>AX25Toolkit on the air" /tmp/kiss
+./bin/bbs -c W1BBS-1 --pos -23.50,-46.60 "AX25Toolkit on the air" /tmp/kiss
+./bin/bbs -c W1BBS-1 --msg G2UGK "Hello from AX25Toolkit" /tmp/kiss
 ./bin/bbs -c W1BBS-1 --ui CQ "Net starts at 2100Z" /tmp/kiss
 
 # Or use ax25send (standalone, no BBS overhead):
-./bin/ax25send -c W1BBS-1 /tmp/kiss --pos -23.5000,-46.6000 "KISSBBS on the air"
-./bin/ax25send -c W1BBS-1 /tmp/kiss --msg G2UGK "Hello from KISSBBS"
+./bin/ax25send -c W1BBS-1 /tmp/kiss --pos -23.5000,-46.6000 "AX25Toolkit on the air"
+./bin/ax25send -c W1BBS-1 /tmp/kiss --msg G2UGK "Hello from AX25Toolkit"
 ./bin/ax25send -c W1BBS-1 /tmp/kiss --ui CQ "Net starts at 2100Z"
 
 # With digipeater path and repeat (ax25send only):
@@ -517,7 +517,7 @@ and full AX.25 ARQ state machines.  Each caller gets an independent session.
 Sample BBS session (from a remote caller's perspective):
 ```
 *** Connected to W1BBS-1 ***
-Welcome to KISSBBS!  Type H for help.
+Welcome to AX25Toolkit!  Type H for help.
 > H
 H    This help
 U    List connected users
@@ -1765,7 +1765,7 @@ END
 
 ' ── Definitions below main ────────────────────────────────────────────────────
 SUB PrintVersion
-  PRINT "KISSBBS v1.0"
+  PRINT "AX25Toolkit v1.0"
 END SUB
 
 FUNCTION Add(a, b)
@@ -1983,7 +1983,7 @@ IF sock% < 0 THEN
     PRINT "connect failed"
     END
 END IF
-SOCKSEND sock%, "user N0CALL pass -1 vers KISSBBS 1.0\r\n"
+SOCKSEND sock%, "user N0CALL pass -1 vers AX25Toolkit 1.0\r\n"
 SOCKRECV sock%, line$, 5000      ' 5 s timeout
 PRINT line$
 SOCKCLOSE sock%
@@ -2826,7 +2826,7 @@ The `~s` status display reports the configured interval (e.g. `KA=60s`) or
 ```
 $ ax25tnc -c W1AW /dev/ttyUSB0
 
-KISSBBS TNC — W1AW @ /dev/ttyUSB0 @9600 baud
+AX25Toolkit TNC — W1AW @ /dev/ttyUSB0 @9600 baud
 Type HELP for commands, double Ctrl+C to exit.
 Listening on W1AW for incoming connections.
 
@@ -3517,7 +3517,7 @@ interp.run();
 ## 21. ax25sim — AX.25 TNC Simulator
 
 `ax25sim` creates a **PTY-based virtual serial port** that emulates a KISS TNC,
-allowing you to test all KISSBBS tools (`bbs`, `ax25tnc`, `basic_tool`) without
+allowing you to test all AX25Toolkit tools (`bbs`, `ax25tnc`, `basic_tool`) without
 any radio hardware.  It provides an interactive terminal with colorful prompts,
 frame monitoring, hex dump display, full parameter tuning, and BASIC script
 execution.
@@ -3536,7 +3536,7 @@ User (stdin/stdout)  ←→  ax25sim  ←→  [Kiss + Router]  ←→  PTY maste
    `/tmp/kiss_sim` (configurable with `-l`).
 2. A `Kiss` instance runs on the PTY master; a `Router` on top handles
    connections, UI frames, and APRS.
-3. Other KISSBBS tools open `/tmp/kiss_sim` as if it were a real serial device.
+3. Other AX25Toolkit tools open `/tmp/kiss_sim` as if it were a real serial device.
 4. You interact via stdin with `//`-prefixed commands.
 
 ### Build

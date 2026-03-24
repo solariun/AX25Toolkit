@@ -66,7 +66,7 @@ DO
         END IF
 
         IF INSTR(u$, "INFO") > 0 THEN
-            PRINT "KISSBBS AX.25 Simulator — github.com/solariun/KISSBBS"
+            PRINT "AX25Toolkit AX.25 Simulator — github.com/solariun/AX25Toolkit"
             PRINT "Use this to test BBS connections, scripts, and protocols."
             handled = 1
         END IF
