@@ -376,50 +376,76 @@ radio station.
   automate welcome messages, menus, mail handling, and more.
   See [§15 BASIC Scripting](#15-basic-scripting) for the full language reference.
 
-### Running the installer
+### One-line install (wget)
 
 ```bash
-# 1. Clone the repository
+wget -qO- https://raw.githubusercontent.com/solariun/AX25Toolkit/main/resources/install_linux_bbs.sh \
+  | sudo bash
+```
+
+Or download first and edit the configuration before running:
+
+```bash
+wget https://raw.githubusercontent.com/solariun/AX25Toolkit/main/resources/install_linux_bbs.sh
+nano install_linux_bbs.sh          # edit callsign, SSID, BLE MAC, etc.
+sudo bash install_linux_bbs.sh
+```
+
+### Running from a cloned repository
+
+```bash
 git clone https://github.com/solariun/AX25Toolkit
 cd AX25Toolkit
 
-# 2. Edit the configuration section at the top of the script
-#    (callsign, SSID, BLE device MAC, etc.)
+# Edit the configuration section at the top of the script
 nano resources/install_linux_bbs.sh
 
-# 3. Run the installer as root
+# Run the installer as root
 sudo bash resources/install_linux_bbs.sh
 ```
 
-The installer will:
-1. Install all system packages (build tools, AX.25 stack, Bluetooth, linpac)
-2. Build and install all AX25Toolkit binaries
-3. Configure the AX.25 port in `/etc/ax25/axports`
-4. Generate `bbs.ini` with your station settings
-5. Create four **systemd services** (all **disabled** by default):
+### What the installer does
 
-| Service | Description |
-|---------|-------------|
-| `ax25tk-ble-bridge` | BLE/BT KISS bridge — connects your Bluetooth radio |
-| `ax25tk-kissattach` | Attaches the KISS PTY to the AX.25 kernel stack |
-| `ax25tk-bbs`        | The AX25Toolkit BBS server |
-| `ax25tk-linpac`     | Linpac AX.25 terminal (daemon mode) |
+1. Installs all system packages (build tools, AX.25 stack, Bluetooth, linpac)
+2. Builds and installs all AX25Toolkit binaries
+3. Configures the AX.25 port in `/etc/ax25/axports`
+4. Generates `bbs.ini` with your station settings
+5. Creates four **systemd services** (all **disabled** by default — no service
+   is started or enabled until you manually activate it)
 
-### Enabling services
+| Service | Description | Depends on |
+|---------|-------------|------------|
+| `ax25tk-ble-bridge` | BLE/BT KISS bridge — connects your Bluetooth radio | `bluetooth.target` |
+| `ax25tk-kissattach` | Attaches the KISS PTY to the AX.25 kernel stack | `ax25tk-ble-bridge` |
+| `ax25tk-bbs`        | The AX25Toolkit BBS server | `ax25tk-kissattach` |
+| `ax25tk-linpac`     | Linpac AX.25 terminal (daemon mode) | `ax25tk-kissattach` |
 
-All services are created **disabled** so you can review and test before going
-live.  Enable them in order:
+Services are chained with `BindsTo=` — if the BLE bridge stops, kissattach
+stops automatically, which cascades to BBS and linpac.
+
+### Post-install: BLE pairing and service activation
+
+**Important:** You must pair the BLE radio **before** enabling services.
+Without LE bonding, BLE writes are silently dropped by the radio (see
+[BLE Pairing Guide](#ble-pairing-guide-linux) above).
 
 ```bash
-# 1. Start the BLE bridge (if using Bluetooth radio)
+# 1. Pair the BLE radio
+sudo bluetoothctl
+[bluetooth]# remove <MAC>          # remove old pairing if any
+[bluetooth]# scan le               # must use LE scan, not 'scan on'
+[bluetooth]# pair <MAC>
+[bluetooth]# trust <MAC>
+[bluetooth]# scan off
+[bluetooth]# exit
+
+# 2. Test the bridge manually
+sudo bt_kiss_bridge --ble --test '<DEVICE_NAME_OR_MAC>'
+
+# 3. Enable the service chain (in order)
 sudo systemctl enable --now ax25tk-ble-bridge
-
-# 2. Attach KISS to the AX.25 stack
 sudo systemctl enable --now ax25tk-kissattach
-
-# 3. Start the BBS (or linpac, or both)
-sudo systemctl enable --now ax25tk-bbs
-sudo systemctl enable --now ax25tk-linpac   # optional — linpac terminal
+sudo systemctl enable --now ax25tk-bbs          # or ax25tk-linpac
 
 # View logs
 journalctl -u ax25tk-ble-bridge -f

@@ -322,12 +322,15 @@ if [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
 [Unit]
 Description=AX25Toolkit BLE-to-KISS Bridge (${FULL_CALLSIGN})
 After=bluetooth.target
-Wants=bluetooth.target
+Requires=bluetooth.target
+# bt_kiss_bridge creates the PTY at ${KISS_PTY} — downstream services
+# use BindsTo= on this unit so they stop when the bridge stops.
 
 [Service]
 Type=simple
 User=${SERVICE_USER}
 ExecStart=${_EXEC}
+ExecStopPost=/bin/rm -f ${KISS_PTY}
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -338,56 +341,49 @@ WantedBy=multi-user.target
 SVCEOF
 
     systemctl daemon-reload
-
-    if [[ -n "${BLE_DEVICE}" ]]; then
-        systemctl enable ax25tk-ble-bridge.service
-        success "ax25tk-ble-bridge.service — created and ENABLED (not started)"
-    else
-        info "ax25tk-ble-bridge.service — created (BLE not configured, edit service file to set device UUIDs)"
-    fi
+    success "ax25tk-ble-bridge.service — created (disabled, enable manually after BLE pairing)"
 
 else
     warn "BLE bridge not built — skipping BLE bridge service"
 fi
 
 # ── 6b) kissattach service (not enabled, not started) ───────────────────────
+# Determine dependency: BLE bridge (creates PTY) or direct serial
+KISS_REQUIRES=""
 KISS_AFTER="network.target"
-if [[ -n "${BLE_DEVICE}" ]] && [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
+if [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
+    # BindsTo ensures kissattach stops when BLE bridge stops (cascades down)
+    KISS_REQUIRES="BindsTo=ax25tk-ble-bridge.service"
     KISS_AFTER="ax25tk-ble-bridge.service"
-elif [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
-    # BLE bridge installed but not configured — user can update After= later
-    KISS_AFTER="network.target"
 fi
 
 cat > "${SYSTEMD_DIR}/ax25tk-kissattach.service" <<SVCEOF
 [Unit]
 Description=KISS Attach — ${AX25_PORT_NAME} on ${KISS_PTY} (${FULL_CALLSIGN})
 After=${KISS_AFTER}
+${KISS_REQUIRES}
 
 [Service]
-Type=forking
+Type=oneshot
 User=${SERVICE_USER}
+RemainAfterExit=yes
 ExecStart=/usr/sbin/kissattach ${KISS_PTY} ${AX25_PORT_NAME}
 ExecStartPost=/sbin/kissparms -p ${AX25_PORT_NAME} -t ${AX25_TXDELAY} -l ${AX25_PERSIST}
-RemainAfterExit=yes
-Restart=on-failure
-RestartSec=5
+ExecStop=/bin/sh -c 'ifconfig ax0 down 2>/dev/null; killall kissattach 2>/dev/null; true'
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
 
 systemctl daemon-reload
-success "ax25tk-kissattach.service — created (not enabled)"
+success "ax25tk-kissattach.service — created (disabled)"
 
 # ── 6c) BBS service (not enabled, not started) ──────────────────────────────
-BBS_AFTER="ax25tk-kissattach.service"
-
 cat > "${SYSTEMD_DIR}/ax25tk-bbs.service" <<SVCEOF
 [Unit]
 Description=AX25Toolkit AX.25 BBS Server (${BBS_NAME} — ${FULL_CALLSIGN})
-After=${BBS_AFTER}
-Wants=${BBS_AFTER}
+After=ax25tk-kissattach.service
+BindsTo=ax25tk-kissattach.service
 
 [Service]
 Type=simple
@@ -404,14 +400,14 @@ WantedBy=multi-user.target
 SVCEOF
 
 systemctl daemon-reload
-success "ax25tk-bbs.service — created (not enabled)"
+success "ax25tk-bbs.service — created (disabled)"
 
 # ── 6d) Linpac service (not enabled, not started) ───────────────────────────
 cat > "${SYSTEMD_DIR}/ax25tk-linpac.service" <<SVCEOF
 [Unit]
 Description=Linpac AX.25 Terminal (${AX25_PORT_NAME})
 After=ax25tk-kissattach.service
-Wants=ax25tk-kissattach.service
+BindsTo=ax25tk-kissattach.service
 
 [Service]
 Type=simple
@@ -427,7 +423,7 @@ WantedBy=multi-user.target
 SVCEOF
 
 systemctl daemon-reload
-success "ax25tk-linpac.service — created (not enabled)"
+success "ax25tk-linpac.service — created (disabled)"
 
 # =============================================================================
 #  STEP 7 — Summary
@@ -481,28 +477,29 @@ echo -e "${BOLD}Next steps:${RESET}"
 echo ""
 echo "  1. Edit ${BBS_INI} with your station details"
 echo ""
-if [[ -n "${BLE_DEVICE}" ]] && [[ "${BLE_BRIDGE_BUILT}" -eq 1 ]]; then
-    echo "  2. Start the BLE bridge (already enabled on boot):"
-    echo "       sudo systemctl start ax25tk-ble-bridge"
-    echo ""
-    echo "  3. Attach KISS port and start the BBS:"
-    echo "       sudo systemctl enable --now ax25tk-kissattach"
-    echo "       sudo systemctl enable --now ax25tk-bbs"
-else
-    echo "  2. Connect your TNC to ${SERIAL_PORT} and start kissattach:"
-    echo "       sudo kissattach ${SERIAL_PORT} ${AX25_PORT_NAME}"
-    echo "     Or enable the service:"
-    echo "       sudo systemctl enable --now ax25tk-kissattach"
-    echo ""
-    echo "  3. Start the BBS:"
-    echo "       sudo systemctl enable --now ax25tk-bbs"
-fi
+echo "  2. Pair your BLE radio (required before enabling services):"
+echo "       sudo bluetoothctl"
+echo "       [bluetooth]# remove <MAC>          # remove old pairing if any"
+echo "       [bluetooth]# scan le               # use LE scan (not just 'scan on')"
+echo "       [bluetooth]# pair <MAC>"
+echo "       [bluetooth]# trust <MAC>"
+echo "       [bluetooth]# scan off"
+echo "       [bluetooth]# exit"
 echo ""
-echo "  Optional — Linpac terminal:"
-echo "       sudo systemctl enable --now ax25tk-linpac"
+echo "  3. Test the BLE bridge manually first:"
+echo "       sudo bt_kiss_bridge --ble --test '<DEVICE_NAME_OR_MAC>'"
+echo ""
+echo "  4. Enable the full service chain (in order):"
+echo "       sudo systemctl enable --now ax25tk-ble-bridge"
+echo "       sudo systemctl enable --now ax25tk-kissattach"
+echo "       sudo systemctl enable --now ax25tk-bbs       # or ax25tk-linpac"
+echo ""
+echo "     Services are chained: if BLE bridge stops, kissattach and"
+echo "     BBS/linpac stop automatically (BindsTo= dependency)."
 echo ""
 echo "  View logs:"
-echo "       journalctl -u ax25tk-bbs -f"
 echo "       journalctl -u ax25tk-ble-bridge -f"
+echo "       journalctl -u ax25tk-kissattach -f"
+echo "       journalctl -u ax25tk-bbs -f"
 echo ""
 success "AX25Toolkit installation complete — 73!"
