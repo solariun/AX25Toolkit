@@ -25,7 +25,7 @@ brew install googletest sqlite
 sudo apt-get install libgtest-dev libsqlite3-dev libdbus-1-dev libbluetooth-dev pkg-config
 
 # 3. Build everything + run tests
-make          # builds: bbs  ax25kiss  ax25tnc  ax25send  basic_tool  bt_kiss_bridge  ax25sim
+make          # builds: bbs  ax25kiss  ax25tnc  ax25send  basic_tool  bt_kiss_bridge  modemtnc  ax25sim
 make test     # runs the GoogleTest suite — all must pass
 ```
 
@@ -322,6 +322,7 @@ radio station.
 | `ax25sim` | PTY-based TNC simulator for hardware-free development and testing |
 | `basic_tool` | Offline BASIC REPL and script debugger for BBS script development |
 | `ax25send` | Fire-and-forget APRS position/message and UI frame sender |
+| `modemtnc` | Software TNC — soundcard DSP replaces hardware TNC (AFSK 1200/300, GMSK 9600) |
 
 - **`bt_kiss_bridge`** — Use inexpensive Bluetooth radios (BLE or Classic BT) as
   packet modems.  No expensive dedicated TNC hardware required; a handheld radio
@@ -472,6 +473,9 @@ bt_kiss_bridge ──► PTY /tmp/kiss ──► ax25tnc   (interactive terminal
                                  └──► bbs        (multi-user BBS server)
                └──► TCP :8001   ──► ax25tnc -c W1AW localhost:8001
 
+modemtnc       ──► PTY /tmp/kiss ──► (same clients as above)
+                                      software TNC: soundcard DSP (no hardware TNC)
+
 bt_sniffer  ──  transparent tap between bridge and client (observe only)
 ax25sim     ──  virtual TNC for hardware-free development
 ax25kiss    ──  standalone UI-frame terminal (no lib, one file)
@@ -507,6 +511,37 @@ any AX.25 software via a PTY symlink (`/tmp/kiss`) or a TCP server.
 ```
 
 Full reference: [§19 bt_kiss_bridge](#19-bt_kiss_bridge--bluetooth-kiss-bridge-ble--classic-bt)
+
+---
+
+### `modemtnc` — Software TNC (Soundcard DSP)
+
+Replaces a hardware TNC by performing AX.25 HDLC and modem DSP in software
+using the computer's soundcard.  Supports AFSK 1200 (VHF), AFSK 300 (HF),
+and GMSK 9600 (UHF).  Zero external dependencies — uses CoreAudio (macOS) or
+ALSA (Linux).  DSP derived from Dire Wolf.
+
+```bash
+# Run with soundcard
+./bin/modemtnc -s 1200 --link /tmp/kiss --monitor
+
+# HF 300 baud
+./bin/modemtnc -s 300 --link /tmp/kiss --monitor
+
+# 9600 baud (auto 96 kHz sample rate)
+./bin/modemtnc -s 9600 --link /tmp/kiss --monitor
+
+# Self-test (no audio hardware needed)
+./bin/modemtnc --loopback --monitor
+
+# With TCP server for remote clients
+./bin/modemtnc -s 1200 --link /tmp/kiss --server-port 8001 --monitor
+```
+
+Compatible with any audio interface: SignaLink USB, DRAWS, DINAH, SHARI,
+DMK URI, built-in soundcard, or SDR via audio pipe.
+
+Full reference: [modemtnc/README.md](modemtnc/README.md)
 
 ---
 

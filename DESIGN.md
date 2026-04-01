@@ -20,6 +20,15 @@
     - [UML Class Diagram](#uml-class-diagram)
     - [Data Flow Diagram](#data-flow-diagram)
 11. [BLE Transport Implementation Notes](#11-ble-transport-implementation-notes)
+12. [modemtnc — Software TNC DSP Architecture](#12-modemtnc--software-tnc-dsp-architecture)
+    - [System Context](#system-context)
+    - [DSP Pipeline](#dsp-pipeline)
+    - [AFSK Demodulator](#afsk-demodulator-design)
+    - [9600 Baud Baseband (G3RUH)](#9600-baud-baseband-g3ruh)
+    - [HDLC Framing](#hdlc-framing)
+    - [PLL Clock Recovery](#pll-clock-recovery)
+    - [Platform Audio Backends](#platform-audio-backends)
+    - [Build Matrix & Compatibility](#build-matrix--compatibility)
 
 ---
 
@@ -753,3 +762,377 @@ queue on macOS, or calls `org.bluez.GattCharacteristic1.WriteValue` on Linux) di
 from the calling thread. No separate writer thread or queue is used. This eliminates
 latency from the former 50 ms polling loop and ensures KISS frames hit the radio
 in the order and at the timing they arrive from the PTY/TCP client.
+
+---
+
+## 12. modemtnc — Software TNC DSP Architecture
+
+modemtnc is a software TNC that replaces a hardware TNC (e.g., a Kantronics KPC-3,
+TNC-Pi, or the TNC built into a Kenwood TH-D75) by performing AX.25 HDLC framing
+and modem DSP entirely in software, using the computer's soundcard as the radio
+interface.  It presents the same KISS interface (PTY + TCP) as `bt_kiss_bridge`,
+so all existing tools (`ax25tnc`, `bbs`, `ax25send`) work unchanged.
+
+DSP algorithms are derived from **Dire Wolf** by John Langner, WB2OSZ (GPLv2),
+simplified to a single-decoder architecture with C++ classes and no global state.
+
+### System Context
+
+```
+                                  ┌──────────────────┐
+                                  │   Radio           │
+                                  │ (audio in/out via │
+                                  │  sound interface) │
+                                  └────────┬─────────┘
+                                           │ analog audio
+                                  ┌────────┴─────────┐
+                                  │  Sound Interface  │
+                                  │  (SignaLink USB,  │
+                                  │   DRAWS, DINAH,   │
+                                  │   built-in mic)   │
+                                  └────────┬─────────┘
+                                           │ PCM 16-bit mono
+                              ┌────────────┴────────────┐
+                              │       modemtnc           │
+                              │                          │
+                              │  AudioDevice (RX/TX)     │
+                              │       │          ^       │
+                              │       v          │       │
+                              │  Demodulator  Modulator  │
+                              │       │          ^       │
+                              │       v          │       │
+                              │  HDLC Decoder  Encoder   │
+                              │       │          ^       │
+                              │       v          │       │
+                              │  KISS encode   decode    │
+                              │       │          ^       │
+                              │       v          │       │
+                              │    PTY + TCP server      │
+                              └───────────┬──────────────┘
+                                          │ KISS protocol
+                              ┌───────────┴──────────────┐
+                              │  ax25tnc / bbs / ax25send │
+                              │  (or any KISS client)     │
+                              └──────────────────────────┘
+```
+
+### DSP Pipeline
+
+#### RX Path (air → host)
+
+```
+  audio_read()           16-bit PCM mono samples
+       │
+       ▼
+  ┌─────────────┐
+  │  Pre-filter  │  Bandpass FIR (AFSK) or Lowpass FIR (9600)
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐       ┌─────────────┐
+  │ Mark LO mix │       │ Space LO mix│   (AFSK only: DDS oscillators)
+  │ I/Q decomp  │       │ I/Q decomp  │
+  └──────┬──────┘       └──────┬──────┘
+         │                     │
+         ▼                     ▼
+  ┌─────────────┐       ┌─────────────┐
+  │  LP/RRC     │       │  LP/RRC     │   RRC: Root Raised Cosine
+  │  filter     │       │  filter     │
+  └──────┬──────┘       └──────┬──────┘
+         │                     │
+         ▼                     ▼
+     hypot(I,Q)           hypot(I,Q)
+         │                     │
+         ▼                     ▼
+     ┌───┴──────┐         ┌───┴──────┐
+     │   AGC    │         │   AGC    │   Fast attack / slow decay
+     └───┬──────┘         └───┬──────┘
+         │                     │
+         └──────┬──────────────┘
+                │
+                ▼
+         mark_norm - space_norm     →  demod_out (positive = mark = 1)
+                │
+                ▼
+         ┌──────────┐
+         │   PLL    │  32-bit phase accumulator, nudge at transitions
+         └────┬─────┘
+              │ (at PLL overflow: sample one bit)
+              ▼
+         ┌──────────┐
+         │ NRZI     │  same = 1, different = 0
+         │ decode   │
+         └────┬─────┘
+              │
+              ▼
+         ┌──────────┐
+         │ HDLC     │  Flag detect (0x7E), bit unstuff, FCS check
+         │ Decoder  │
+         └────┬─────┘
+              │
+              ▼
+         AX.25 frame  →  kiss::encode()  →  write to PTY/TCP
+```
+
+#### TX Path (host → air)
+
+```
+  PTY/TCP read  →  kiss::Decoder  →  AX.25 frame bytes
+                                           │
+                                           ▼
+                                     ┌──────────┐
+                                     │ HDLC     │  Add FCS, bit stuff, NRZI encode
+                                     │ Encoder  │  Wrap with 0x7E preamble/postamble
+                                     └────┬─────┘
+                                          │ bit stream (NRZI encoded)
+                                          ▼
+                                     ┌──────────┐
+                                     │Modulator │  AFSK: bit → mark/space tone
+                                     │          │  9600: bit → scramble → baseband
+                                     └────┬─────┘
+                                          │ 16-bit PCM samples
+                                          ▼
+                                     audio_write()  →  soundcard  →  radio
+```
+
+### AFSK Demodulator Design
+
+The AFSK demodulator implements the Dire Wolf "Profile A" algorithm, which uses
+quadrature mixing with local oscillators to detect mark and space tones.
+
+**Parameters by baud rate:**
+
+| Parameter | 1200 baud | 300 baud | EAS (521 baud) |
+|-----------|-----------|----------|----------------|
+| Mark frequency | 1200 Hz | 1600 Hz | 2083 Hz |
+| Space frequency | 2200 Hz | 1800 Hz | 1563 Hz |
+| Pre-filter bandwidth | 0.155 * baud | 0.87 * baud | 0.87 * baud |
+| Pre-filter window | Truncated | Cosine | Cosine |
+| RRC rolloff | 0.20 | 0.20 | 0.20 |
+| RRC width | 2.80 symbols | 2.80 symbols | 2.80 symbols |
+| AGC fast attack | 0.70 | 0.70 | 0.70 |
+| AGC slow decay | 0.000090 | 0.000090 | 0.000090 |
+
+**DDS (Direct Digital Synthesis) oscillators:**
+
+Each oscillator uses a 32-bit phase accumulator:
+```
+phase += delta           (unsigned 32-bit add, wraps at 2^32)
+delta = round(2^32 * freq / sample_rate)
+output = cos256_table[(phase >> 24) & 0xFF]
+```
+
+The 256-entry cosine table provides 8-bit phase resolution — sufficient for
+modem-quality FSK detection (not audio fidelity).
+
+**AGC (Automatic Gain Control):**
+
+```
+if (sample >= peak)
+    peak = sample * fast_attack + peak * (1 - fast_attack)
+else
+    peak = sample * slow_decay + peak * (1 - slow_decay)
+
+// Symmetric for valley tracking
+
+normalized = (sample - midpoint) / (peak - valley)
+// Result in [-0.5, +0.5] range
+```
+
+This compensates for the common mark/space amplitude imbalance caused by
+pre-emphasis/de-emphasis in FM radios.  The space tone (2200 Hz) is typically
+2-3x weaker than the mark tone (1200 Hz) after de-emphasis.
+
+### 9600 Baud Baseband (G3RUH)
+
+For 9600 baud, there are no audio tones — the data is transmitted as a
+scrambled NRZ baseband signal directly on the FM deviation.
+
+**G3RUH Scrambler polynomial**: `x^17 + x^12 + 1`
+
+```
+Scrambler (TX):
+    out = (in ^ (state >> 16) ^ (state >> 11)) & 1
+    state = (state << 1) | (out & 1)    ← feeds back OUTPUT
+
+Descrambler (RX):
+    out = (in ^ (state >> 16) ^ (state >> 11)) & 1
+    state = (state << 1) | (in & 1)     ← feeds back INPUT
+```
+
+The descrambler is self-synchronizing: after 17 bits, the shift register
+aligns with the scrambler regardless of initial state.  This eliminates the
+need for a separate synchronization protocol.
+
+**Sample rate requirement**: 9600 baud needs at least 48000 Hz sample rate
+(5 samples/bit).  At 44100 Hz only 4.59 samples/bit — too few for reliable
+PLL lock.  modemtnc auto-selects 96000 Hz for 9600 baud (10 samples/bit),
+providing comfortable margin.
+
+### HDLC Framing
+
+HDLC (High-Level Data Link Control) wraps AX.25 frames for transmission:
+
+```
+┌──────┬──────────────────────┬─────┬──────┐
+│ Flag │  Data (bit-stuffed)  │ FCS │ Flag │
+│ 0x7E │                      │ CRC │ 0x7E │
+└──────┴──────────────────────┴─────┴──────┘
+```
+
+**Encoding order (TX):**
+1. Compute CRC16-CCITT FCS over raw frame
+2. Append FCS (LSB first)
+3. Bit-stuff: insert 0 after every 5 consecutive 1-bits
+4. NRZI encode: 0 = toggle output, 1 = no change
+5. Wrap with 0x7E flag bytes (not bit-stuffed)
+
+**Decoding order (RX):**
+1. NRZI decode (in demodulator): same = 1, different = 0
+2. Flag detection: pattern 0x7E in decoded stream
+3. Bit-unstuff: after 5 ones, discard following 0
+4. FCS check: recompute CRC, compare with received FCS
+5. If valid: strip FCS, deliver frame
+
+**CRC16-CCITT:**
+```
+Polynomial: 0x8408 (bit-reversed 0x1021)
+Initial:    0xFFFF
+Final XOR:  0xFFFF
+```
+
+Uses a 256-entry lookup table for byte-at-a-time processing (from RFC 1549).
+
+**Minimum frame size**: 17 bytes (7 dest + 7 src + ctrl + 2 FCS).
+**Maximum frame size**: ~330 bytes (with digipeaters and max info field).
+
+### PLL Clock Recovery
+
+The digital PLL recovers the symbol clock from the demodulated signal:
+
+```
+┌────────────────────────────────────────────────┐
+│                 PLL State                       │
+│                                                 │
+│  data_clock_pll: signed 32-bit accumulator     │
+│  step_per_sample = round(2^32 * baud / Fs)    │
+│                                                 │
+│  Each sample:                                   │
+│    pll += step   (unsigned add, wraps at 2^32) │
+│                                                 │
+│  When pll overflows (positive → negative):     │
+│    → Sample one data bit                        │
+│    → This is the center of the bit period       │
+│                                                 │
+│  At each data transition:                       │
+│    pll *= inertia   (nudge toward zero)         │
+│    locked:    inertia = 0.74                    │
+│    searching: inertia = 0.50                    │
+│                                                 │
+│  Effect: transitions pull PLL sampling point    │
+│  toward mid-bit, tracking frequency drift       │
+└────────────────────────────────────────────────┘
+```
+
+The PLL needs 5-10 flag bytes (preamble) to acquire lock.  The `--txdelay`
+parameter controls preamble length (default 300 ms = 45 flags at 1200 baud).
+
+### Platform Audio Backends
+
+modemtnc uses system audio APIs with zero external dependencies:
+
+```
+┌─────────────────────────────────────────────────┐
+│              AudioDevice (abstract)              │
+│                                                  │
+│  open(device, rate, capture, playback) → bool   │
+│  read(buf, frames)  → int                       │
+│  write(buf, frames) → int                       │
+│  flush()                                         │
+│  close()                                         │
+│  capture_fd() → int   (for select/poll)         │
+└──────────┬──────────────────┬───────────────────┘
+           │                  │
+    ┌──────┴──────┐    ┌──────┴──────┐
+    │  CoreAudio  │    │    ALSA     │
+    │  (macOS)    │    │   (Linux)   │
+    └─────────────┘    └─────────────┘
+```
+
+**macOS (CoreAudioDevice):**
+- Uses AudioQueue API (simplest CoreAudio interface)
+- 3 rotating buffers for capture and playback
+- Ring buffer (16384 samples) with mutex + condition_variable for RX
+- Free-buffer pool with mutex + condition_variable for TX
+- Frameworks: CoreAudio, AudioToolbox, CoreFoundation
+
+**Linux (AlsaDevice):**
+- Uses ALSA `snd_pcm_readi` / `snd_pcm_writei` (blocking I/O)
+- Auto-recovers from EPIPE (buffer overrun/underrun)
+- Exposes capture pollfd for `select()` integration
+- Package: `libasound2-dev` (Debian/Ubuntu) / `alsa-lib-devel` (Fedora)
+
+### Build Matrix & Compatibility
+
+**Supported platforms:**
+
+| Platform | Audio | Compiler | Status |
+|----------|-------|----------|--------|
+| macOS (Apple Silicon) | CoreAudio | clang++ (Xcode CLT) | Tested, loopback PASS |
+| macOS (Intel) | CoreAudio | clang++ | Expected to work |
+| Linux x86_64 | ALSA | g++ / clang++ | Builds, needs audio test |
+| Linux ARM (Raspberry Pi) | ALSA | g++ | Builds, needs audio test |
+
+**Build dependencies:**
+
+| Platform | Required | Install |
+|----------|----------|---------|
+| macOS | Xcode Command Line Tools | `xcode-select --install` |
+| Debian/Ubuntu | ALSA dev headers | `sudo apt install libasound2-dev` |
+| Fedora/RHEL | ALSA dev headers | `sudo dnf install alsa-lib-devel` |
+| Arch | ALSA dev headers | `sudo pacman -S alsa-lib` |
+
+**Compiler requirements:**
+- C++17 (for `std::optional`, structured bindings, `if constexpr`)
+- `-ffast-math` on DSP files for vectorization
+- `-O2` minimum for real-time audio processing
+
+**Compatible audio interfaces:**
+
+| Interface | Type | VHF 1200 | HF 300 | UHF 9600 | Notes |
+|-----------|------|----------|--------|----------|-------|
+| SignaLink USB | USB sound card | Yes | Yes | Yes | Most popular, VOX PTT |
+| DRAWS | RPi HAT | Yes | Yes | Yes | Dual port, GPIO PTT |
+| DINAH | USB | Yes | Yes | Yes | |
+| SHARI | USB | Yes | Yes | No | SA818 hotspot |
+| DMK URI | USB | Yes | Yes | No | |
+| RB-USB RIM | USB | Yes | Yes | No | |
+| RA-35 | USB | Yes | Yes | No | |
+| Built-in soundcard | 3.5mm | Yes | Yes | Varies | Testing only |
+| RTL-SDR + rtl_fm | Audio pipe | RX only | RX only | RX only | SDR receive |
+| gqrx / SDR# | Audio pipe | RX only | RX only | RX only | SDR receive |
+
+**9600 baud compatibility notes:**
+- Requires flat audio response to ~4800 Hz
+- Many radios need a hardware mod (discriminator tap) for 9600 baud
+- Radios with built-in 9600 support: Kenwood TM-D710, Yaesu FTM-400, ICom IC-9700
+- The SignaLink USB passes 9600 baud without modification
+- Use 96000 Hz sample rate (modemtnc auto-selects this)
+
+**Relationship to bt_kiss_bridge:**
+
+Both modemtnc and bt_kiss_bridge serve as transport layers that present a
+KISS interface to the host. They are complementary:
+
+| | modemtnc | bt_kiss_bridge |
+|---|---------|---------------|
+| **Transport** | Soundcard audio | Bluetooth (BLE/Classic) |
+| **TNC** | Software (DSP in modemtnc) | Hardware (radio's built-in TNC) |
+| **Radio connection** | Audio cable / sound interface | BLE or BT Classic |
+| **Supported radios** | Any radio + sound interface | BLE/BT TNC radios (GA-5WB, VR-N76, TH-D75) |
+| **CPU usage** | Higher (real-time DSP) | Minimal |
+| **Latency** | Higher (audio buffering + DSP) | Lower (direct KISS over BT) |
+| **Host interface** | PTY + TCP (KISS) | PTY + TCP (KISS) |
+
+Both can run simultaneously on different ports, allowing a station to operate
+multiple radios (e.g., VHF packet via soundcard + UHF via BLE TNC).
