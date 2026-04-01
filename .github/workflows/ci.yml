@@ -33,7 +33,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libgtest-dev libsqlite3-dev pkg-config cmake
+          sudo apt-get install -y libgtest-dev libsqlite3-dev libasound2-dev \
+                                   libdbus-1-dev libbluetooth-dev pkg-config cmake
 
           # Ubuntu ships GoogleTest as source-only; build and install the .a files.
           GTEST_SRC=$(ls -d /usr/src/googletest /usr/src/gtest 2>/dev/null | head -1)
@@ -51,7 +52,21 @@ jobs:
 
       # ── Build core (no BLE) ────────────────────────────────────────────────
       - name: Build core apps
-        run: make bbs ax25kiss ax25tnc ax25sim
+        run: make bbs ax25kiss ax25tnc ax25sim ax25send
+
+      # ── Build modemtnc ────────────────────────────────────────────────────
+      - name: Build modemtnc
+        run: make modemtnc
+
+      # ── Modemtnc loopback self-test ────────────────────────────────────────
+      - name: modemtnc loopback (1200 baud)
+        run: ./bin/modemtnc --loopback -s 1200 -c CI | grep -q "PASS"
+
+      - name: modemtnc loopback (300 baud)
+        run: ./bin/modemtnc --loopback -s 300 -c CI | grep -q "PASS"
+
+      - name: modemtnc loopback (9600 baud)
+        run: ./bin/modemtnc --loopback -s 9600 -c CI | grep -q "PASS"
 
       # ── Test suite ─────────────────────────────────────────────────────────
       - name: Run tests

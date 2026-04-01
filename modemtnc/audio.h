@@ -32,6 +32,10 @@ public:
     // Factory: create platform-appropriate audio device
     static AudioDevice* create();
 
+    // List all available audio devices to stdout
+    // Returns number of devices found
+    static int list_devices();
+
 protected:
     int sample_rate_ = 44100;
 };

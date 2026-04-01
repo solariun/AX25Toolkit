@@ -183,4 +183,110 @@ AudioDevice* AudioDevice::create() {
     return new CoreAudioDevice();
 }
 
+int AudioDevice::list_devices() {
+    // Get all audio devices via CoreAudio HAL
+    AudioObjectPropertyAddress prop = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    UInt32 size = 0;
+    OSStatus err = AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &prop, 0, nullptr, &size);
+    if (err != noErr || size == 0) {
+        printf("No audio devices found.\n");
+        return 0;
+    }
+
+    int count = (int)(size / sizeof(AudioDeviceID));
+    auto* devices = new AudioDeviceID[count];
+    AudioObjectGetPropertyData(kAudioObjectSystemObject, &prop, 0, nullptr, &size, devices);
+
+    printf("%-4s  %-40s  %-5s  %-5s  %s\n", "#", "Device Name", "IN", "OUT", "UID");
+    printf("%-4s  %-40s  %-5s  %-5s  %s\n", "---", "----------------------------------------", "-----", "-----", "---");
+
+    int listed = 0;
+    for (int i = 0; i < count; i++) {
+        // Get device name
+        CFStringRef nameRef = nullptr;
+        AudioObjectPropertyAddress nameProp = {
+            kAudioObjectPropertyName,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain
+        };
+        UInt32 nameSize = sizeof(nameRef);
+        AudioObjectGetPropertyData(devices[i], &nameProp, 0, nullptr, &nameSize, &nameRef);
+
+        char name[256] = "(unknown)";
+        if (nameRef) {
+            CFStringGetCString(nameRef, name, sizeof(name), kCFStringEncodingUTF8);
+            CFRelease(nameRef);
+        }
+
+        // Get UID
+        CFStringRef uidRef = nullptr;
+        AudioObjectPropertyAddress uidProp = {
+            kAudioDevicePropertyDeviceUID,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain
+        };
+        UInt32 uidSize = sizeof(uidRef);
+        AudioObjectGetPropertyData(devices[i], &uidProp, 0, nullptr, &uidSize, &uidRef);
+
+        char uid[256] = "";
+        if (uidRef) {
+            CFStringGetCString(uidRef, uid, sizeof(uid), kCFStringEncodingUTF8);
+            CFRelease(uidRef);
+        }
+
+        // Check input channels
+        AudioObjectPropertyAddress inProp = {
+            kAudioDevicePropertyStreamConfiguration,
+            kAudioDevicePropertyScopeInput,
+            kAudioObjectPropertyElementMain
+        };
+        UInt32 inSize = 0;
+        bool has_input = false;
+        if (AudioObjectGetPropertyDataSize(devices[i], &inProp, 0, nullptr, &inSize) == noErr && inSize > 0) {
+            auto* bufs = (AudioBufferList*)malloc(inSize);
+            if (AudioObjectGetPropertyData(devices[i], &inProp, 0, nullptr, &inSize, bufs) == noErr) {
+                for (UInt32 b = 0; b < bufs->mNumberBuffers; b++)
+                    if (bufs->mBuffers[b].mNumberChannels > 0) has_input = true;
+            }
+            free(bufs);
+        }
+
+        // Check output channels
+        AudioObjectPropertyAddress outProp = {
+            kAudioDevicePropertyStreamConfiguration,
+            kAudioDevicePropertyScopeOutput,
+            kAudioObjectPropertyElementMain
+        };
+        UInt32 outSize = 0;
+        bool has_output = false;
+        if (AudioObjectGetPropertyDataSize(devices[i], &outProp, 0, nullptr, &outSize) == noErr && outSize > 0) {
+            auto* bufs = (AudioBufferList*)malloc(outSize);
+            if (AudioObjectGetPropertyData(devices[i], &outProp, 0, nullptr, &outSize, bufs) == noErr) {
+                for (UInt32 b = 0; b < bufs->mNumberBuffers; b++)
+                    if (bufs->mBuffers[b].mNumberChannels > 0) has_output = true;
+            }
+            free(bufs);
+        }
+
+        if (!has_input && !has_output) continue;
+
+        printf("%-4d  %-40s  %-5s  %-5s  %s\n",
+               listed, name,
+               has_input  ? "yes" : "-",
+               has_output ? "yes" : "-",
+               uid);
+        listed++;
+    }
+
+    delete[] devices;
+    printf("\nFound %d audio device(s).\n", listed);
+    printf("\nUsage:  modemtnc -d \"<Device Name>\" ...\n");
+    printf("  (macOS currently uses system default — device selection by name coming soon)\n");
+    return listed;
+}
+
 #endif // __APPLE__

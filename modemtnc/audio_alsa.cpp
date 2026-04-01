@@ -100,4 +100,77 @@ AudioDevice* AudioDevice::create() {
     return new AlsaDevice();
 }
 
+int AudioDevice::list_devices() {
+    printf("%-4s  %-20s  %-40s  %-5s  %-5s\n", "#", "ALSA Device", "Description", "IN", "OUT");
+    printf("%-4s  %-20s  %-40s  %-5s  %-5s\n", "---", "--------------------", "----------------------------------------", "-----", "-----");
+
+    int listed = 0;
+
+    // List PCM devices via ALSA hints
+    void** hints = nullptr;
+    if (snd_device_name_hint(-1, "pcm", &hints) < 0) {
+        printf("Cannot enumerate ALSA devices.\n");
+        return 0;
+    }
+
+    for (void** h = hints; *h; h++) {
+        char* name = snd_device_name_get_hint(*h, "NAME");
+        char* desc = snd_device_name_get_hint(*h, "DESC");
+        char* ioid = snd_device_name_get_hint(*h, "IOID");
+
+        if (!name) continue;
+
+        // Skip null and complex virtual devices
+        if (strncmp(name, "null", 4) == 0) { free(name); free(desc); free(ioid); continue; }
+
+        bool has_input = true, has_output = true;
+        if (ioid) {
+            if (strcmp(ioid, "Input") == 0) has_output = false;
+            if (strcmp(ioid, "Output") == 0) has_input = false;
+        }
+
+        // Clean up description (replace newlines with spaces)
+        char clean_desc[80] = "";
+        if (desc) {
+            int j = 0;
+            for (int i = 0; desc[i] && j < 79; i++) {
+                if (desc[i] == '\n') { if (j > 0 && clean_desc[j-1] != ' ') clean_desc[j++] = ' '; }
+                else clean_desc[j++] = desc[i];
+            }
+            clean_desc[j] = 0;
+        }
+        // Truncate long descriptions
+        if (strlen(clean_desc) > 40) { clean_desc[37] = '.'; clean_desc[38] = '.'; clean_desc[39] = '.'; clean_desc[40] = 0; }
+
+        printf("%-4d  %-20s  %-40s  %-5s  %-5s\n",
+               listed, name, clean_desc,
+               has_input  ? "yes" : "-",
+               has_output ? "yes" : "-");
+        listed++;
+
+        free(name);
+        free(desc);
+        free(ioid);
+    }
+    snd_device_name_free_hint(hints);
+
+    // Also list hardware cards
+    printf("\nHardware cards:\n");
+    int card = -1;
+    while (snd_card_next(&card) == 0 && card >= 0) {
+        char* name = nullptr;
+        snd_card_get_name(card, &name);
+        printf("  hw:%d  %s\n", card, name ? name : "(unknown)");
+        free(name);
+    }
+
+    printf("\nFound %d ALSA device(s).\n", listed);
+    printf("\nUsage:  modemtnc -d \"<ALSA Device>\" ...\n");
+    printf("  Common choices:\n");
+    printf("    -d default          System default (usually works)\n");
+    printf("    -d plughw:1,0       USB sound card (card 1, device 0) — auto format conversion\n");
+    printf("    -d hw:1,0           USB sound card (card 1, device 0) — raw hardware access\n");
+    return listed;
+}
+
 #endif // __linux__

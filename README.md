@@ -538,6 +538,11 @@ ALSA (Linux).  DSP derived from Dire Wolf.
 ./bin/modemtnc -s 1200 --link /tmp/kiss --server-port 8001 --monitor
 ```
 
+List available audio devices:
+```bash
+./bin/modemtnc --list-devices
+```
+
 Compatible with any audio interface: SignaLink USB, DRAWS, DINAH, SHARI,
 DMK URI, built-in soundcard, or SDR via audio pipe.
 

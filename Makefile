@@ -143,8 +143,14 @@ $(BINDIR)/test_ax25lib: $(TESTDIR)/test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) | $(
 	    -o $@ $< $(LIB_OBJ) $(BASIC_OBJ) \
 	    $(GTEST_LDFLAGS) $(SQLITE_LIBS)
 
-test: $(BINDIR)/test_ax25lib
+$(BINDIR)/test_modemtnc: $(TESTDIR)/test_modemtnc.cpp $(BUILDDIR)/modem_dsp.o $(BUILDDIR)/modem_hdlc.o $(LIB_OBJ) | $(BINDIR)
+	$(CXX) -std=c++17 -O2 -Ilib -Imodemtnc $(GTEST_CFLAGS) \
+	    -o $@ $< $(BUILDDIR)/modem_dsp.o $(BUILDDIR)/modem_hdlc.o $(LIB_OBJ) \
+	    $(GTEST_LDFLAGS)
+
+test: $(BINDIR)/test_ax25lib $(BINDIR)/test_modemtnc
 	$(BINDIR)/test_ax25lib --gtest_color=yes
+	$(BINDIR)/test_modemtnc --gtest_color=yes
 
 # ── Native BLE object compilation ──────────────────────────────────────────
 $(BUILDDIR)/bt_ble_linux.o: $(LIBDIR)/bt_ble_linux.cpp $(LIBDIR)/bt_ble_native.h | $(BUILDDIR)
@@ -215,6 +221,7 @@ install:
 	install -m 755 $(BINDIR)/basic_tool     $(INSTALLDIR)/basic_tool
 	install -m 755 $(BINDIR)/bt_kiss_bridge $(INSTALLDIR)/bt_kiss_bridge
 	install -m 755 $(BINDIR)/bt_sniffer     $(INSTALLDIR)/bt_sniffer
+	install -m 755 $(BINDIR)/modemtnc      $(INSTALLDIR)/modemtnc
 	ln -sf bt_kiss_bridge $(INSTALLDIR)/ble_kiss_bridge
 	@echo "Installing config and scripts to ~/.ax25toolkit ..."
 	@mkdir -p $(HOME)/.ax25toolkit/scripts
@@ -234,6 +241,7 @@ uninstall:
 	      $(INSTALLDIR)/basic_tool \
 	      $(INSTALLDIR)/bt_kiss_bridge \
 	      $(INSTALLDIR)/bt_sniffer \
+	      $(INSTALLDIR)/modemtnc \
 	      $(INSTALLDIR)/ble_kiss_bridge
 	@echo "Done."
 

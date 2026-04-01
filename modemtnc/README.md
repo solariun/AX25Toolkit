@@ -73,6 +73,65 @@ sample rate is automatically raised to 96000 Hz (override with `-r`).
 
 **TX path**: PTY/TCP -> KISS decode -> HDLC encode -> modulate -> audio samples
 
+## Selecting an Audio Device
+
+Before running modemtnc, identify which audio device to use:
+
+```bash
+./bin/modemtnc --list-devices
+```
+
+### macOS output example
+
+```
+#     Device Name                               IN     OUT    UID
+---   ----------------------------------------  -----  -----  ---
+0     MacBook Air Microphone                    yes    -      BuiltInMicrophoneDevice
+1     MacBook Air Speakers                      -      yes    BuiltInSpeakerDevice
+2     SignaLink USB Audio CODEC                  yes    yes    AppleUSBAudioEngine:...
+```
+
+Look for your sound interface (SignaLink, DRAWS, DINAH, etc.) — it needs both
+**IN** (capture from radio) and **OUT** (transmit to radio).
+
+### Linux output example
+
+```
+#     ALSA Device           Description                               IN     OUT
+---   --------------------  ----------------------------------------  -----  -----
+0     default               Default Audio Device                      yes    yes
+1     sysdefault:CARD=...   USB Audio CODEC, USB Audio Analog         yes    yes
+2     hw:1,0                USB Audio CODEC                           yes    yes
+
+Hardware cards:
+  hw:0  HDA Intel PCH
+  hw:1  USB Audio CODEC
+```
+
+For Linux, use the ALSA device name with `-d`:
+```bash
+# System default (usually works)
+./bin/modemtnc -d default -s 1200 --link /tmp/kiss --monitor
+
+# Specific USB sound card (card 1) with auto-conversion
+./bin/modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
+
+# Direct hardware access (card 1) — lowest latency
+./bin/modemtnc -d hw:1,0 -s 1200 --link /tmp/kiss --monitor
+```
+
+### Which device to choose?
+
+| Scenario | macOS | Linux |
+|----------|-------|-------|
+| USB sound interface (SignaLink, DINAH) | Shows as extra device with IN+OUT | Use `plughw:N,0` where N is card number |
+| Built-in soundcard | `MacBook Air Microphone` / `Speakers` | `default` or `hw:0,0` |
+| Raspberry Pi HAT (DRAWS) | N/A | `plughw:1,0` (usually card 1) |
+| Virtual audio (for SDR) | Use BlackHole or Loopback | Use `snd-aloop` module |
+
+**Tip**: if unsure, run `--list-devices`, plug/unplug your interface, run again,
+and compare — the new entry is your device.
+
 ## Command Line Reference
 
 ```

@@ -58,6 +58,7 @@ struct Config {
     int         persist       = 63;
     int         slottime_ms   = 100;
     int         volume        = 50;
+    bool        list_devices  = false;
 };
 
 static void signal_handler(int) { g_running = false; }
@@ -161,6 +162,7 @@ static void usage() {
         "  --link PATH       PTY symlink (default: /tmp/kiss)\n"
         "  --server-port N   TCP KISS server port (disabled by default)\n"
         "  --monitor         Print decoded frames\n"
+        "  --list-devices    List available audio devices and exit\n"
         "  --loopback        Self-test: TX → loopback → RX (no audio device)\n"
         "  --txdelay N       TX delay in ms (default: 300)\n"
         "  --txtail N        TX tail in ms (default: 100)\n"
@@ -189,6 +191,7 @@ static Config parse_args(int argc, char* argv[]) {
         {"server-port", required_argument, nullptr, 'P'},
         {"monitor",     no_argument,       nullptr, 'M'},
         {"loopback",    no_argument,       nullptr, 'B'},
+        {"list-devices",no_argument,       nullptr, 'D'},
         {"txdelay",     required_argument, nullptr, 1},
         {"txtail",      required_argument, nullptr, 2},
         {"persist",     required_argument, nullptr, 3},
@@ -209,6 +212,7 @@ static Config parse_args(int argc, char* argv[]) {
             case 'P': cfg.server_port = atoi(optarg); break;
             case 'M': cfg.monitor = true; break;
             case 'B': cfg.loopback = true; break;
+            case 'D': cfg.list_devices = true; break;
             case 1:   cfg.txdelay_ms = atoi(optarg); break;
             case 2:   cfg.txtail_ms = atoi(optarg); break;
             case 3:   cfg.persist = atoi(optarg); break;
@@ -520,7 +524,9 @@ int main(int argc, char* argv[]) {
 
     Config cfg = parse_args(argc, argv);
 
-    if (cfg.loopback) {
+    if (cfg.list_devices) {
+        AudioDevice::list_devices();
+    } else if (cfg.loopback) {
         run_loopback(cfg);
     } else {
         run_bridge(cfg);
