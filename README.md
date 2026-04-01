@@ -18,16 +18,37 @@ remote shell access, an interactive KISS terminal, and a comprehensive GoogleTes
 git clone https://github.com/solariun/AX25Toolkit
 cd AX25Toolkit
 
-# 2. Install build dependencies
-#    macOS
-brew install googletest sqlite
-#    Ubuntu / Debian
-sudo apt-get install libgtest-dev libsqlite3-dev libdbus-1-dev libbluetooth-dev pkg-config
+# 2. Install build dependencies (auto-detects OS and package manager)
+make deps
 
 # 3. Build everything + run tests
-make          # builds: bbs  ax25kiss  ax25tnc  ax25send  basic_tool  bt_kiss_bridge  modemtnc  ax25sim
-make test     # runs the GoogleTest suite — all must pass
+make          # builds all tools
+make test     # runs the GoogleTest suite (194 tests)
+
+# 4. Verify modemtnc DSP (no hardware needed)
+./bin/modemtnc --loopback --monitor
+
+# 5. List available audio devices
+./bin/modemtnc --list-devices
+
+# 6. List nearby Bluetooth radios
+./bin/bt_kiss_bridge --scan --ble
+./bin/bt_kiss_bridge --scan --bt
 ```
+
+### What gets built
+
+| Tool | Description |
+|------|-------------|
+| `bbs` | Multi-connection AX.25 BBS with BASIC scripting and APRS |
+| `ax25tnc` | Interactive TNC terminal — connect, monitor, unproto, script |
+| `ax25kiss` | Lightweight standalone KISS terminal (single file, no lib) |
+| `ax25send` | Fire-and-forget APRS position/message and UI frame sender |
+| `bt_kiss_bridge` | Bluetooth KISS bridge — BLE + Classic BT to PTY/TCP |
+| `modemtnc` | Software TNC — soundcard DSP (AFSK 1200/300, GMSK 9600) |
+| `bt_sniffer` | Transparent KISS proxy tap for traffic analysis |
+| `ax25sim` | PTY-based TNC simulator for hardware-free development |
+| `basic_tool` | Offline BASIC REPL and script debugger |
 
 ---
 

@@ -139,31 +139,75 @@ modemtnc [options]
 
 Audio:
   -d DEVICE         Audio device name
-                    Linux (ALSA): "default", "hw:1", "plughw:1,0"
-                    macOS (CoreAudio): system default (device selection TBD)
-  -r RATE           Sample rate in Hz (default: 44100, auto 96000 for 9600 baud)
+                      Linux (ALSA): "default", "hw:1,0", "plughw:1,0"
+                      macOS (CoreAudio): system default used automatically
+  -r RATE           Sample rate in Hz (default: 44100)
+                      Auto-selects 96000 for 9600 baud
+  --list-devices    List all available audio devices and exit
+                      Shows device name, IN/OUT capabilities, and UID/card info
 
 Modem:
-  -s SPEED          Baud rate: 300, 1200, 9600 (default: 1200)
-  --volume N        TX amplitude 0-100 (default: 50)
+  -s SPEED          Baud rate (default: 1200)
+                      300   — HF AFSK (1600/1800 Hz, SSB)
+                      1200  — VHF/UHF AFSK Bell 202 (1200/2200 Hz)
+                      9600  — UHF GMSK/G3RUH scrambled baseband
+  --volume N        TX audio amplitude 0-100 (default: 50)
+                      Adjust to avoid clipping in the radio
 
 KISS interface:
   --link PATH       PTY symlink path (default: /tmp/kiss)
+                      Any KISS client connects via this path
   --server-port N   TCP KISS server port (disabled by default)
+                      Allows remote/network KISS clients
 
-TX timing:
-  --txdelay N       TX preamble delay in ms (default: 300)
-  --txtail N        TX tail in ms (default: 100)
+TX timing (CSMA/CA):
+  --txdelay N       Preamble flags before data, in ms (default: 300)
+                      Gives the remote receiver time to lock PLL
+  --txtail N        Silence after last frame, in ms (default: 100)
   --persist N       CSMA persistence 0-255 (default: 63)
+                      Higher = more aggressive channel access
   --slottime N      CSMA slot time in ms (default: 100)
 
 Display:
-  -c CALL           Callsign (shown in monitor output)
-  --monitor         Print decoded frames to stdout
+  -c CALL           Your callsign (shown in monitor output headers)
+  --monitor         Print all decoded frames to stdout with timestamps
+                      Shows direction (<- AIR for RX, -> AIR for TX),
+                      AX.25 decode, and hex dump
 
 Testing:
-  --loopback        Self-test: modulate -> demodulate in memory (no audio device)
-  -h, --help        Show help
+  --loopback        Self-test: TX -> modulate -> demodulate -> RX in memory
+                      No audio device needed — validates entire DSP chain
+  -h, --help        Show help and exit
+```
+
+### Quick Command Examples
+
+```bash
+# List audio devices
+modemtnc --list-devices
+
+# Self-test (no hardware)
+modemtnc --loopback --monitor
+
+# Standard VHF packet (1200 baud AFSK)
+modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
+
+# HF packet (300 baud AFSK via SSB)
+modemtnc -d plughw:1,0 -s 300 --link /tmp/kiss --monitor
+
+# High-speed UHF (9600 baud G3RUH)
+modemtnc -d plughw:1,0 -s 9600 --link /tmp/kiss --monitor
+
+# With TCP server for remote clients
+modemtnc -d default -s 1200 --link /tmp/kiss --server-port 8001 --monitor
+
+# Adjust TX timing for long-distance HF
+modemtnc -d plughw:1,0 -s 300 --txdelay 500 --txtail 200 --link /tmp/kiss --monitor
+
+# Connect clients to the TNC
+ax25tnc -c W1AW -r W1BBS /tmp/kiss           # interactive terminal
+ax25send -c W1AW /tmp/kiss --pos 42.36,-71.06 "Boston"   # APRS beacon
+bbs -c W1BBS /tmp/kiss                        # BBS server
 ```
 
 ## Examples
