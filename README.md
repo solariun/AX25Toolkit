@@ -3148,7 +3148,7 @@ Use `--inspect` to confirm UUIDs for your specific device.
 
 ## 19. bt_kiss_bridge — Bluetooth KISS Bridge (BLE + Classic BT)
 
-`bt_kiss_bridge` is a native C++17 Bluetooth KISS bridge supporting both
+`bt_kiss_bridge` is a native C++11 Bluetooth KISS bridge supporting both
 **BLE** (GATT) and **Classic Bluetooth** (RFCOMM/SPP).  It replaces
 `ble_kiss_monitor.py`, offering the same modes with no Python dependency.
 

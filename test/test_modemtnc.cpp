@@ -173,7 +173,9 @@ TEST(HdlcBitStuff, AllOnesPayload) {
 class ModemLoopback : public ::testing::TestWithParam<std::tuple<modem::Type, int, int>> {};
 
 TEST_P(ModemLoopback, RoundTrip) {
-    auto [type, baud, sample_rate] = GetParam();
+    modem::Type type = std::get<0>(GetParam());
+    int baud = std::get<1>(GetParam());
+    int sample_rate = std::get<2>(GetParam());
 
     modem::Modulator mod;
     modem::Demodulator demod;

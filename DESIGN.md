@@ -1093,7 +1093,7 @@ modemtnc uses system audio APIs with zero external dependencies:
 | Arch | ALSA dev headers | `sudo pacman -S alsa-lib` |
 
 **Compiler requirements:**
-- C++17 (for `std::optional`, structured bindings, `if constexpr`)
+- C++11 (project standard — no C++14/17 features in production code)
 - `-ffast-math` on DSP files for vectorization
 - `-O2` minimum for real-time audio processing
 

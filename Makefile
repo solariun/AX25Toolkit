@@ -121,7 +121,7 @@ $(BINDIR)/ax25send: $(SRCDIR)/ax25send.cpp $(LIB_OBJ) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LIB_OBJ)
 
 $(BINDIR)/bt_sniffer: $(SRCDIR)/bt_sniffer.cpp $(LIBDIR)/ax25dump.hpp | $(BINDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -Ilib -o $@ $< $(LDUTIL)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDUTIL)
 	@echo "Built: bin/bt_sniffer"
 
 # ── Shorthand targets (so `make bbs` still works) ──────────────────────────
@@ -144,7 +144,7 @@ $(BINDIR)/test_ax25lib: $(TESTDIR)/test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) | $(
 	    $(GTEST_LDFLAGS) $(SQLITE_LIBS)
 
 $(BINDIR)/test_modemtnc: $(TESTDIR)/test_modemtnc.cpp $(BUILDDIR)/modem_dsp.o $(BUILDDIR)/modem_hdlc.o $(LIB_OBJ) | $(BINDIR)
-	$(CXX) -std=c++17 -O2 -Ilib -Imodemtnc $(GTEST_CFLAGS) \
+	$(CXX) -std=c++17 -Ilib -Imodemtnc $(GTEST_CFLAGS) \
 	    -o $@ $< $(BUILDDIR)/modem_dsp.o $(BUILDDIR)/modem_hdlc.o $(LIB_OBJ) \
 	    $(GTEST_LDFLAGS)
 
@@ -154,16 +154,16 @@ test: $(BINDIR)/test_ax25lib $(BINDIR)/test_modemtnc
 
 # ── Native BLE object compilation ──────────────────────────────────────────
 $(BUILDDIR)/bt_ble_linux.o: $(LIBDIR)/bt_ble_linux.cpp $(LIBDIR)/bt_ble_native.h | $(BUILDDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -Ilib $(DBUS_CFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(DBUS_CFLAGS) -c -o $@ $<
 
 $(BUILDDIR)/bt_ble_macos.o: $(LIBDIR)/bt_ble_macos.mm $(LIBDIR)/bt_ble_native.h | $(BUILDDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -Ilib -fobjc-arc -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -fobjc-arc -c -o $@ $<
 
 $(BUILDDIR)/bt_rfcomm_macos.o: $(LIBDIR)/bt_rfcomm_macos.mm $(LIBDIR)/bt_rfcomm_macos.h | $(BUILDDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -Ilib -fobjc-arc -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -fobjc-arc -c -o $@ $<
 
 $(BINDIR)/bt_kiss_bridge: $(SRCDIR)/bt_kiss_bridge.cpp $(BLE_OBJ) $(BT_MACOS_OBJ) | $(BINDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -Ilib $(DBUS_CFLAGS) \
+	$(CXX) $(CXXFLAGS) $(DBUS_CFLAGS) \
 	    -o $@ $< $(BLE_OBJ) $(BT_MACOS_OBJ) \
 	    $(BLE_SYS) $(BLUETOOTH_LIBS)
 	@echo "Built: bin/bt_kiss_bridge"
@@ -187,19 +187,19 @@ else
 endif
 
 $(BUILDDIR)/modemtnc.o: $(MODEM_DIR)/modemtnc.cpp $(MODEM_DIR)/modem.h $(MODEM_DIR)/hdlc.h $(MODEM_DIR)/audio.h | $(BUILDDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -Ilib -I$(MODEM_DIR) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -I$(MODEM_DIR) -c -o $@ $<
 
 $(BUILDDIR)/modem_dsp.o: $(MODEM_DIR)/modem.cpp $(MODEM_DIR)/modem.h | $(BUILDDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -ffast-math -I$(MODEM_DIR) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -ffast-math -I$(MODEM_DIR) -c -o $@ $<
 
 $(BUILDDIR)/modem_hdlc.o: $(MODEM_DIR)/hdlc.cpp $(MODEM_DIR)/hdlc.h | $(BUILDDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -I$(MODEM_DIR) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -I$(MODEM_DIR) -c -o $@ $<
 
 $(BUILDDIR)/modem_audio.o: $(MODEM_AUDIO_SRC) $(MODEM_DIR)/audio.h | $(BUILDDIR)
-	$(CXX) -std=c++17 -O2 -Wall -Wextra -I$(MODEM_DIR) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -I$(MODEM_DIR) -c -o $@ $<
 
 $(BINDIR)/modemtnc: $(MODEM_OBJS) $(LIB_OBJ) | $(BINDIR)
-	$(CXX) -std=c++17 -O2 -o $@ $(MODEM_OBJS) $(LIB_OBJ) $(LDUTIL) $(MODEM_AUDIO_LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(MODEM_OBJS) $(LIB_OBJ) $(LDUTIL) $(MODEM_AUDIO_LIBS)
 	@echo "Built: bin/modemtnc"
 
 # ── Clean ───────────────────────────────────────────────────────────────────

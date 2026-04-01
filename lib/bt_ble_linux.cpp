@@ -611,7 +611,8 @@ static std::string uuid_short_name(const std::string& uuid) {
         // Vendor-specific well-known
         {0xFFE0, "Vendor specific"}, {0xFFE1, "Vendor specific"},
     };
-    for (auto& [k, v] : names) if (sig == k) return v;
+    for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); ++i)
+        if (sig == names[i].first) return names[i].second;
     return "Unknown";
 }
 

@@ -71,7 +71,7 @@
 #include <iomanip>
 #include <iostream>
 #include <mutex>
-#include <optional>  // for BridgeConfig::force_response
+// force_response: -1 = auto-detect, 0 = WWR, 1 = response
 #include <signal.h>
 #include <sstream>
 #include <string>
@@ -201,20 +201,21 @@ static Ax25Info decode_ax25(const uint8_t* d, size_t n) {
         r.summary = "[too short: " + std::to_string(n) + " bytes]";
         return r;
     }
-    auto [dest, _d]      = decode_addr(d, 0);
-    auto [src, end_src]  = decode_addr(d, 7);
-    r.dest = dest; r.src = src;
+    std::pair<std::string, bool> da = decode_addr(d, 0);
+    std::pair<std::string, bool> sa = decode_addr(d, 7);
+    r.dest = da.first; r.src = sa.first;
+    bool end_src = sa.second;
 
     int off = 14;
     while (!end_src && (size_t)(off + 7) <= n) {
-        auto [rep, e] = decode_addr(d, off);
-        r.via.push_back(rep);
-        end_src = e;
+        std::pair<std::string, bool> rp = decode_addr(d, off);
+        r.via.push_back(rp.first);
+        end_src = rp.second;
         off += 7;
     }
     if ((size_t)off >= n) {
         r.type = "NO-CTRL";
-        r.summary = src + " -> " + dest + "  [no control byte]";
+        r.summary = r.src + " -> " + r.dest + "  [no control byte]";
         return r;
     }
 
@@ -235,33 +236,34 @@ static Ax25Info decode_ax25(const uint8_t* d, size_t n) {
         int ns = (ctrl >> 1) & 7, nr = (ctrl >> 5) & 7;
         r.type = "I";
         if ((size_t)(off + 2) < n) r.info = {d + off + 2, d + n};
-        r.summary = src + " -> " + dest + via_pfx + "  [I(NS=" + std::to_string(ns)
+        r.summary = r.src + " -> " + r.dest + via_pfx + "  [I(NS=" + std::to_string(ns)
                   + ",NR=" + std::to_string(nr) + (pf ? "P" : "") + ")]";
     } else if ((ctrl & 0x03) == 0x01) {                    // S-frame
         int nr = (ctrl >> 5) & 7;
-        static constexpr std::pair<uint8_t, const char*> st[] =
+        static const std::pair<uint8_t, const char*> st[] =
             {{0x01,"RR"},{0x05,"RNR"},{0x09,"REJ"},{0x0D,"SREJ"}};
         const char* stype = "S?";
-        for (auto& [v, n] : st) if ((ctrl & 0xF) == v) { stype = n; break; }
+        for (size_t i = 0; i < sizeof(st)/sizeof(st[0]); ++i)
+            if ((ctrl & 0xF) == st[i].first) { stype = st[i].second; break; }
         r.type = stype;
-        r.summary = src + " -> " + dest + via_pfx + "  [" + stype
+        r.summary = r.src + " -> " + r.dest + via_pfx + "  [" + stype
                   + "(NR=" + std::to_string(nr) + (pf ? "P/F" : "") + ")]";
     } else {                                                 // U-frame
         uint8_t base = ctrl & ~0x10u;
-        static constexpr std::pair<uint8_t, const char*> ut[] =
+        static const std::pair<uint8_t, const char*> ut[] =
             {{0x2F,"SABM"},{0x43,"DISC"},{0x63,"UA"},{0x0F,"DM"},
              {0x87,"FRMR"},{0x03,"UI"}};
         const char* utype = nullptr;
-        for (auto& [v, n] : ut)
-            if (ctrl == v || ctrl == (uint8_t)(v | 0x10u) || base == v)
-                { utype = n; break; }
+        for (size_t i = 0; i < sizeof(ut)/sizeof(ut[0]); ++i)
+            if (ctrl == ut[i].first || ctrl == (uint8_t)(ut[i].first | 0x10u) || base == ut[i].first)
+                { utype = ut[i].second; break; }
         std::string ft;
         if (utype) { ft = utype; if (pf) ft += "(P/F)"; }
         else { std::ostringstream ss; ss << "U?0x" << std::hex << (int)ctrl; ft = ss.str(); }
         r.type = ft;
         std::string via_str;
         for (auto& v : r.via) via_str += " via " + v;
-        r.summary = src + " -> " + dest + via_str + "  [" + ft + "]";
+        r.summary = r.src + " -> " + r.dest + via_str + "  [" + ft + "]";
     }
     return r;
 }
@@ -315,8 +317,8 @@ static std::string uuid_name(const std::string& uuid) {
         {"6e400003-b5a3-f393-e0a9-e50e24dcca9e", "Nordic UART TX (notify)"},
     };
     std::string lo = lower(uuid);
-    for (auto& [k, v] : full128)
-        if (lo == k) return v;
+    for (size_t i = 0; i < sizeof(full128)/sizeof(full128[0]); ++i)
+        if (lo == full128[i].first) return full128[i].second;
 
     // Extract 16-bit SIG number from 0000XXXX-*
     // UUID format: 8-4-4-4-12  ->  positions 4-7 are the 16-bit number
@@ -437,8 +439,8 @@ static std::string uuid_name(const std::string& uuid) {
             {0x2906, "Valid Range"},
             {0x2908, "Report Reference"},
         };
-        for (auto& [k, v] : sig_uuids)
-            if (sig == k) return v;
+        for (size_t i = 0; i < sizeof(sig_uuids)/sizeof(sig_uuids[0]); ++i)
+            if (sig == sig_uuids[i].first) return sig_uuids[i].second;
     }
     return "Unknown";
 }
@@ -476,7 +478,7 @@ struct BridgeConfig {
     bool   monitor          = false;       // print per-frame hex + AX.25 decode
     bool   show_keepalive   = false;       // show BLE keep-alive in monitor output
     bool   tnc_init         = false;       // send KISS ON/RESTART/INTERFACE KISS/RESET + params on connect
-    std::optional<bool> force_response;    // nullopt = auto-detect
+    int force_response = -1;               // -1 = auto-detect, 0 = WWR, 1 = response
 
     // Transport selection
     enum Transport { AUTO, BLE, BT };
@@ -543,7 +545,7 @@ public:
             cfg_.read_uuid.empty()    ? nullptr : cfg_.read_uuid.c_str(),
             cfg_.timeout,
             cfg_.mtu,
-            cfg_.force_response.has_value() && *cfg_.force_response);
+            cfg_.force_response > 0);
 
         if (!handle_) return false;
 
@@ -1167,13 +1169,13 @@ static void do_sniff(const BridgeConfig& cfg,
     std::unique_ptr<RadioTransport> transport;
     if (cfg.transport == BridgeConfig::BT) {
 #ifdef __linux__
-        transport = std::make_unique<BtTransport>(cfg.address, cfg.bt_channel);
+        transport.reset(new BtTransport(cfg.address, cfg.bt_channel));
 #else
         std::cerr << "[SNIFF] Classic BT not supported on this platform.\n";
         return;
 #endif
     } else {
-        transport = std::make_unique<BleTransport>(cfg);
+        transport.reset(new BleTransport(cfg));
     }
 
     if (!transport->connect()) {
@@ -1271,11 +1273,12 @@ static void do_sniff(const BridgeConfig& cfg,
                 print_frame_detail(ax, kf.payload.data(), kf.payload.size());
             } else {
                 // KISS control (TXDELAY=1, P=2, SLOTTIME=3, etc.)
-                static constexpr std::pair<int,const char*> knames[] = {
+                static const std::pair<int,const char*> knames[] = {
                     {1,"TXDELAY"},{2,"PERSIST"},{3,"SLOTTIME"},
                     {4,"TXTAIL"},{5,"FULLDUPLEX"},{6,"SETHW"},{255,"RETURN"}};
                 const char* kname = "CMD?";
-                for (auto& [v,nm] : knames) if (kf.type == v) { kname = nm; break; }
+                for (size_t ki = 0; ki < sizeof(knames)/sizeof(knames[0]); ++ki)
+                    if (kf.type == knames[ki].first) { kname = knames[ki].second; break; }
                 uint8_t val = kf.payload.empty() ? 0 : kf.payload[0];
                 std::printf("  └─ KISS ctrl  port=%d  %s  val=%u (0x%02x)\n",
                             kf.port, kname, val, val);
@@ -1956,7 +1959,7 @@ int main(int argc, char* argv[]) {
         else if (a == "--channel"           && i+1 < argc) { cfg.bt_channel   = std::stoi(argv[++i]); }
         else if (a == "--ble")                              { cfg.transport    = BridgeConfig::BLE; }
         else if (a == "--bt")                               { cfg.transport    = BridgeConfig::BT; }
-        else if (a == "--write-with-response")              { cfg.force_response = true; }
+        else if (a == "--write-with-response")              { cfg.force_response = 1; }
         else if (a == "--monitor")                          { cfg.monitor        = true; }
         else if (a == "--tnc-init")                         { cfg.tnc_init       = true; }
         else if (a == "--show-keepalive")                   { cfg.show_keepalive = true; }

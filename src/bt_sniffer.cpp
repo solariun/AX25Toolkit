@@ -155,14 +155,16 @@ static Ax25Info decode_ax25(const uint8_t* d, size_t n) {
     Ax25Info r;
     if (n < 15) { r.summary = "[too short: " + std::to_string(n) + " bytes]"; return r; }
 
-    auto [dest, _d]     = decode_addr(d, 0);
-    auto [src, end_src] = decode_addr(d, 7);
+    std::pair<std::string, bool> da = decode_addr(d, 0);
+    std::pair<std::string, bool> sa = decode_addr(d, 7);
+    std::string dest = da.first, src = sa.first;
+    bool end_src = sa.second;
     int  off = 14;
     std::string via;
     while (!end_src && (size_t)(off + 7) <= n) {
-        auto [rep, e] = decode_addr(d, off);
-        via += " via " + rep;
-        end_src = e; off += 7;
+        std::pair<std::string, bool> rp = decode_addr(d, off);
+        via += " via " + rp.first;
+        end_src = rp.second; off += 7;
     }
     if ((size_t)off >= n) { r.summary = src + " -> " + dest + "  [no ctrl]"; return r; }
 
@@ -176,18 +178,20 @@ static Ax25Info decode_ax25(const uint8_t* d, size_t n) {
         ft = "I(NS=" + std::to_string(ns) + ",NR=" + std::to_string(nr) + (pf ? "P" : "") + ")";
     } else if ((ctrl & 0x03) == 0x01) {                    // S-frame
         int nr = (ctrl >> 5) & 7;
-        static constexpr std::pair<uint8_t, const char*> st[] =
+        static const std::pair<uint8_t, const char*> st[] =
             {{0x01,"RR"},{0x05,"RNR"},{0x09,"REJ"},{0x0D,"SREJ"}};
         const char* stype = "S?";
-        for (auto& [v, nm] : st) if ((ctrl & 0xF) == v) { stype = nm; break; }
+        for (size_t i = 0; i < sizeof(st)/sizeof(st[0]); ++i)
+            if ((ctrl & 0xF) == st[i].first) { stype = st[i].second; break; }
         ft = std::string(stype) + "(NR=" + std::to_string(nr) + (pf ? "/F" : "") + ")";
     } else {                                                // U-frame
         uint8_t base = ctrl & ~0x10u;
-        static constexpr std::pair<uint8_t, const char*> ut[] =
+        static const std::pair<uint8_t, const char*> ut[] =
             {{0x2F,"SABM"},{0x43,"DISC"},{0x63,"UA"},{0x0F,"DM"},{0x87,"FRMR"},{0x03,"UI"}};
         const char* utype = nullptr;
-        for (auto& [v, nm] : ut)
-            if (ctrl == v || ctrl == (uint8_t)(v | 0x10u) || base == v) { utype = nm; break; }
+        for (size_t i = 0; i < sizeof(ut)/sizeof(ut[0]); ++i)
+            if (ctrl == ut[i].first || ctrl == (uint8_t)(ut[i].first | 0x10u) || base == ut[i].first)
+                { utype = ut[i].second; break; }
         if (utype) ft = std::string(utype) + (pf ? "(P/F)" : "");
         else { char s[12]; snprintf(s, sizeof(s), "U?0x%02x", ctrl); ft = s; }
     }
@@ -210,11 +214,12 @@ static void print_kiss_frame(int num, const KissFrame& kf, const char* arrow) {
             printf("%s", hex_dump(kf.payload.data(), kf.payload.size(), "           ").c_str());
         }
     } else {
-        static constexpr std::pair<int, const char*> knames[] = {
+        static const std::pair<int, const char*> knames[] = {
             {1,"TXDELAY"},{2,"PERSIST"},{3,"SLOTTIME"},
             {4,"TXTAIL"},{5,"FULLDUPLEX"},{6,"SETHW"},{255,"RETURN"}};
         const char* kname = "CMD?";
-        for (auto& [v, nm] : knames) if (kf.type == v) { kname = nm; break; }
+        for (size_t ki = 0; ki < sizeof(knames)/sizeof(knames[0]); ++ki)
+            if (kf.type == knames[ki].first) { kname = knames[ki].second; break; }
         uint8_t val = kf.payload.empty() ? 0 : kf.payload[0];
         printf("    └─ [KISS%s#%d port=%d]  ctrl: %s  val=%u (0x%02x)\n",
                arrow, num, kf.port, kname, val, val);
