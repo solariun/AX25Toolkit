@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
+#include <vector>
 
 #ifdef __linux__
 #include <unistd.h>
@@ -21,6 +22,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <IOKit/serial/ioss.h>
 #endif
 
@@ -38,6 +40,49 @@
 namespace ptt {
 
 // ===========================================================================
+//  Hex string parsing: "FEFE94E01C0001FD" → bytes
+// ===========================================================================
+static std::vector<uint8_t> hex_to_bytes(const std::string& hex) {
+    std::vector<uint8_t> bytes;
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        // Skip spaces
+        while (i < hex.size() && hex[i] == ' ') i++;
+        if (i + 1 >= hex.size()) break;
+        char hi = hex[i], lo = hex[i + 1];
+        auto nibble = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        int h = nibble(hi), l = nibble(lo);
+        if (h >= 0 && l >= 0)
+            bytes.push_back((uint8_t)((h << 4) | l));
+    }
+    return bytes;
+}
+
+// Build Icom CI-V PTT command
+static std::vector<uint8_t> icom_ptt_cmd(int addr, bool tx) {
+    // FE FE <addr> E0 1C 00 <01|00> FD
+    return { 0xFE, 0xFE, (uint8_t)addr, 0xE0, 0x1C, 0x00, (uint8_t)(tx ? 0x01 : 0x00), 0xFD };
+}
+
+// Build Yaesu new CAT PTT command
+static std::vector<uint8_t> yaesu_ptt_cmd(bool tx) {
+    // "TX1;" or "TX0;"
+    const char* cmd = tx ? "TX1;" : "TX0;";
+    return std::vector<uint8_t>(cmd, cmd + 4);
+}
+
+// Build Kenwood PTT command
+static std::vector<uint8_t> kenwood_ptt_cmd(bool tx) {
+    // "TX;" or "RX;"
+    const char* cmd = tx ? "TX;" : "RX;";
+    return std::vector<uint8_t>(cmd, cmd + 3);
+}
+
+// ===========================================================================
 //  Controller lifecycle
 // ===========================================================================
 
@@ -52,6 +97,7 @@ const char* Controller::method_name() const {
         case SERIAL_DTR: return "Serial DTR";
         case CM108:      return "CM108 GPIO";
         case GPIO:       return "GPIO (sysfs)";
+        case CAT:        return "CAT";
         case HAMLIB:     return "CAT (hamlib)";
         default:         return "unknown";
     }
@@ -91,8 +137,23 @@ bool Controller::init(const Config& cfg) {
             inited_ = true;
             return true;
 
+        case CAT: {
+            if (!init_serial()) return false;
+            const char* preset_name = "custom";
+            if (cfg_.cat_preset == CAT_ICOM) preset_name = "Icom CI-V";
+            else if (cfg_.cat_preset == CAT_YAESU) preset_name = "Yaesu CAT";
+            else if (cfg_.cat_preset == CAT_KENWOOD) preset_name = "Kenwood";
+            fprintf(stderr, "  PTT: CAT (%s) on %s @ %d baud%s\n",
+                    preset_name, cfg_.device.c_str(), cfg_.cat_rate,
+                    cfg_.invert ? " (inverted)" : "");
+            // Configure serial port baud rate
+            init_cat_serial();
+            inited_ = true;
+            return true;
+        }
+
         case HAMLIB:
-            fprintf(stderr, "  PTT: CAT/hamlib — not yet implemented (use rigctld externally)\n");
+            fprintf(stderr, "  PTT: hamlib — use --ptt cat instead (direct CAT without hamlib)\n");
             inited_ = true;
             return true;
     }
@@ -121,8 +182,11 @@ void Controller::set(bool tx) {
             set_gpio(hw_state);
             break;
 
+        case CAT:
+            set_cat(tx);  // CAT uses logical tx, not hw_state (invert handled in command)
+            break;
+
         case HAMLIB:
-            // TODO: rig_set_ptt() via hamlib
             break;
     }
 }
@@ -183,6 +247,82 @@ void Controller::set_serial(bool tx) {
     if (ioctl(fd_, TIOCMSET, &modem_bits) < 0) {
         fprintf(stderr, "[PTT] Error setting %s: %s\n", method_name(), strerror(errno));
     }
+#else
+    (void)tx;
+#endif
+}
+
+// ===========================================================================
+//  CAT — Direct serial CAT commands (no hamlib)
+// ===========================================================================
+
+void Controller::init_cat_serial() {
+#if defined(__linux__) || defined(__APPLE__)
+    if (fd_ < 0) return;
+
+    struct termios tio;
+    memset(&tio, 0, sizeof(tio));
+    tcgetattr(fd_, &tio);
+
+    // Raw mode — no echo, no canonical, no signals
+    cfmakeraw(&tio);
+    tio.c_cflag |= CLOCAL | CREAD;
+    tio.c_cflag &= ~CRTSCTS;   // No hardware flow control (we may use RTS for something else)
+
+    // Baud rate
+    speed_t spd = B19200;
+    switch (cfg_.cat_rate) {
+        case 4800:   spd = B4800;   break;
+        case 9600:   spd = B9600;   break;
+        case 19200:  spd = B19200;  break;
+        case 38400:  spd = B38400;  break;
+        case 57600:  spd = B57600;  break;
+        case 115200: spd = B115200; break;
+        default:     spd = B19200;  break;
+    }
+    cfsetispeed(&tio, spd);
+    cfsetospeed(&tio, spd);
+
+    // 8N1
+    tio.c_cflag &= ~(CSIZE | PARENB | CSTOPB);
+    tio.c_cflag |= CS8;
+
+    tcsetattr(fd_, TCSANOW, &tio);
+    tcflush(fd_, TCIOFLUSH);
+#endif
+}
+
+void Controller::set_cat(bool tx) {
+#if defined(__linux__) || defined(__APPLE__)
+    if (fd_ < 0) return;
+
+    std::vector<uint8_t> cmd;
+
+    switch (cfg_.cat_preset) {
+        case CAT_ICOM:
+            cmd = icom_ptt_cmd(cfg_.cat_addr, tx);
+            break;
+        case CAT_YAESU:
+            cmd = yaesu_ptt_cmd(tx);
+            break;
+        case CAT_KENWOOD:
+            cmd = kenwood_ptt_cmd(tx);
+            break;
+        case CAT_CUSTOM:
+            cmd = hex_to_bytes(tx ? cfg_.cat_tx_on : cfg_.cat_tx_off);
+            break;
+    }
+
+    if (cmd.empty()) return;
+
+    ssize_t n = ::write(fd_, cmd.data(), cmd.size());
+    if (n != (ssize_t)cmd.size()) {
+        fprintf(stderr, "[PTT] CAT write error: wrote %zd of %zu bytes: %s\n",
+                n, cmd.size(), strerror(errno));
+    }
+
+    // Small delay for radio to process command
+    usleep(50000);  // 50ms
 #else
     (void)tx;
 #endif

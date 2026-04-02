@@ -180,14 +180,19 @@ static void usage() {
         "                      -dtr      assert DTR inverted (active low)\n"
         "                      cm108     CM108/CM119 USB GPIO (Digirig)\n"
         "                      gpio      Linux sysfs GPIO\n"
-        "                      hamlib    CAT control via hamlib (future)\n"
+        "                      cat       Custom CAT commands (hex)\n"
+        "                      icom      Icom CI-V PTT (IC-7300, IC-7100, IC-9700...)\n"
+        "                      yaesu     Yaesu CAT PTT (FT-991A, FT-710, FT-891...)\n"
+        "                      kenwood   Kenwood PTT (TS-590, TS-890...)\n"
         "  --ptt-device DEV  Serial port or HID device for PTT\n"
         "                      rts/dtr: /dev/ttyUSB0, /dev/cu.usbserial-*\n"
         "                      cm108:   /dev/hidraw0 (auto-detected if omitted)\n"
         "  --ptt-gpio N      GPIO pin number (cm108: 1-8, default 3; gpio: sysfs num)\n"
         "  --ptt-invert      Invert PTT signal (active low)\n"
-        "  --hamlib-model N  Hamlib rig model number (-1=auto, 2=rigctld)\n"
-        "  --hamlib-rate N   CAT serial port baud rate (0=default)\n"
+        "  --cat-rate N      CAT serial baud rate (default: 19200)\n"
+        "  --cat-addr 0xNN   Icom CI-V address (default: 0x94 = IC-7300)\n"
+        "  --cat-tx-on HEX  Custom TX ON command in hex (e.g. FEFE94E01C0001FD)\n"
+        "  --cat-tx-off HEX Custom TX OFF command in hex\n"
         "\n"
         "TX timing:\n"
         "  --txdelay N       Preamble delay in ms (default: 300)\n"
@@ -204,12 +209,13 @@ static void usage() {
         "  -h, --help        Show this help\n"
         "\n"
         "Examples:\n"
-        "  modemtnc --list-devices                           # find your audio device\n"
+        "  modemtnc --list-devices                           # find audio devices\n"
         "  modemtnc --loopback --monitor                     # self-test\n"
-        "  modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor\n"
-        "  modemtnc --ptt cm108 -s 1200 --link /tmp/kiss --monitor   # Digirig\n"
-        "  modemtnc --ptt rts --ptt-device /dev/ttyUSB0 -s 1200 --monitor\n"
-        "  modemtnc -s 9600 --link /tmp/kiss --server-port 8001 --monitor\n"
+        "  modemtnc --ptt cm108 -d plughw:1,0 --monitor     # Digirig\n"
+        "  modemtnc --ptt rts --ptt-device /dev/ttyUSB0 -d plughw:1,0 --monitor\n"
+        "  modemtnc --ptt icom --ptt-device /dev/ttyUSB0 -d plughw:2,0 --monitor\n"
+        "  modemtnc --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 --monitor\n"
+        "  modemtnc --ptt cat --cat-tx-on FEFE94E01C0001FD --cat-tx-off FEFE94E01C0000FD ...\n"
         "\n"
         "Connect a KISS client:\n"
         "  ax25tnc -c W1AW -r W1BBS /tmp/kiss\n"
@@ -239,6 +245,10 @@ static Config parse_args(int argc, char* argv[]) {
         {"ptt-invert",  no_argument,       nullptr, 9},
         {"hamlib-model", required_argument, nullptr, 10},
         {"hamlib-rate",  required_argument, nullptr, 11},
+        {"cat-rate",     required_argument, nullptr, 12},
+        {"cat-addr",     required_argument, nullptr, 13},
+        {"cat-tx-on",    required_argument, nullptr, 14},
+        {"cat-tx-off",   required_argument, nullptr, 15},
         {"help",        no_argument,       nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
@@ -269,7 +279,11 @@ static Config parse_args(int argc, char* argv[]) {
                 else if (m == "-dtr")                  { cfg.ptt.method = ptt::SERIAL_DTR; cfg.ptt.invert = true; }
                 else if (m == "cm108") cfg.ptt.method = ptt::CM108;
                 else if (m == "gpio") cfg.ptt.method = ptt::GPIO;
-                else if (m == "hamlib" || m == "cat") cfg.ptt.method = ptt::HAMLIB;
+                else if (m == "cat")     { cfg.ptt.method = ptt::CAT; cfg.ptt.cat_preset = ptt::CAT_CUSTOM; }
+                else if (m == "icom")    { cfg.ptt.method = ptt::CAT; cfg.ptt.cat_preset = ptt::CAT_ICOM; }
+                else if (m == "yaesu")   { cfg.ptt.method = ptt::CAT; cfg.ptt.cat_preset = ptt::CAT_YAESU; }
+                else if (m == "kenwood") { cfg.ptt.method = ptt::CAT; cfg.ptt.cat_preset = ptt::CAT_KENWOOD; }
+                else if (m == "hamlib")  cfg.ptt.method = ptt::HAMLIB;
                 else { fprintf(stderr, "Unknown PTT method: %s\n", optarg); exit(1); }
                 break;
             }
@@ -278,6 +292,10 @@ static Config parse_args(int argc, char* argv[]) {
             case 9:   cfg.ptt.invert = true; break;
             case 10:  cfg.ptt.hamlib_model = atoi(optarg); break;
             case 11:  cfg.ptt.hamlib_rate = atoi(optarg); break;
+            case 12:  cfg.ptt.cat_rate = atoi(optarg); break;
+            case 13:  cfg.ptt.cat_addr = (int)strtol(optarg, NULL, 0); break;
+            case 14:  cfg.ptt.cat_tx_on = optarg; break;
+            case 15:  cfg.ptt.cat_tx_off = optarg; break;
             case 'h': usage(); exit(0);
             default:  usage(); exit(1);
         }

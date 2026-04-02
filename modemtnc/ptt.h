@@ -17,19 +17,35 @@ enum Method {
     SERIAL_DTR,  // Assert DTR on a serial port
     CM108,       // GPIO pin on CM108/CM119 USB audio chip (Digirig, cheap USB cards)
     GPIO,        // Linux sysfs GPIO (/sys/class/gpio/gpioN/value)
-    HAMLIB,      // CAT control via hamlib (Icom CI-V, Yaesu CAT, Kenwood, etc.)
+    CAT,         // Direct CAT commands over serial (no hamlib needed)
+    HAMLIB,      // CAT control via hamlib (future — use CAT instead)
 };
 
 // ---------------------------------------------------------------------------
 //  PTT configuration
 // ---------------------------------------------------------------------------
+// CAT radio presets
+enum CatPreset {
+    CAT_CUSTOM,   // User provides raw hex commands
+    CAT_ICOM,     // Icom CI-V: FE FE <addr> E0 1C 00 <01|00> FD
+    CAT_YAESU,    // Yaesu new CAT: "TX1;" / "TX0;"
+    CAT_KENWOOD,  // Kenwood: "TX;" / "RX;"
+};
+
 struct Config {
     Method      method      = VOX;
-    std::string device;          // Serial port, HID device, or hamlib device path
+    std::string device;          // Serial port, HID device, or CAT serial port
     int         gpio_pin    = 3; // CM108 GPIO pin (1-8) or sysfs GPIO number
     bool        invert      = false;  // Invert PTT signal
-    int         hamlib_model = -1;    // Hamlib rig model (-1 = auto, 2 = rigctld)
-    int         hamlib_rate = 0;      // CAT serial baud rate (0 = default)
+    int         hamlib_model = -1;    // Hamlib rig model (future)
+    int         hamlib_rate = 0;      // Hamlib baud rate (future)
+
+    // CAT settings
+    CatPreset   cat_preset  = CAT_CUSTOM;
+    int         cat_rate    = 19200;  // CAT serial baud rate
+    int         cat_addr    = 0x94;   // Icom CI-V address (default: IC-7300)
+    std::string cat_tx_on;            // Custom hex: "FEFE94E01C0001FD"
+    std::string cat_tx_off;           // Custom hex: "FEFE94E01C0000FD"
 };
 
 // ---------------------------------------------------------------------------
@@ -63,6 +79,9 @@ private:
     // Platform-specific implementations
     bool init_serial();
     void set_serial(bool tx);
+
+    void init_cat_serial();
+    void set_cat(bool tx);
 
     bool init_cm108();
     void set_cm108(bool tx);

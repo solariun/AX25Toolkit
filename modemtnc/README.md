@@ -173,14 +173,19 @@ PTT control:
                       -dtr      assert DTR inverted (active low)
                       cm108     CM108/CM119 USB GPIO (Digirig)
                       gpio      Linux sysfs GPIO
-                      hamlib    CAT control via hamlib (future)
+                      cat       Custom CAT commands (hex bytes)
+                      icom      Icom CI-V PTT (IC-7300, IC-7100, IC-9700)
+                      yaesu     Yaesu CAT PTT (FT-991A, FT-710, FT-891)
+                      kenwood   Kenwood PTT (TS-590, TS-890)
   --ptt-device DEV  Serial port or HID device for PTT
-                      rts/dtr: /dev/ttyUSB0, /dev/cu.usbserial-*
-                      cm108:   /dev/hidraw0 (auto-detected if omitted)
+                      rts/dtr/cat: /dev/ttyUSB0, /dev/cu.usbserial-*
+                      cm108:       /dev/hidraw0 (auto-detected if omitted)
   --ptt-gpio N      GPIO pin number (cm108: 1-8, default 3; gpio: sysfs num)
   --ptt-invert      Invert PTT signal (active low)
-  --hamlib-model N  Hamlib rig model number (-1=auto, 2=rigctld)
-  --hamlib-rate N   CAT serial port baud rate (0=default)
+  --cat-rate N      CAT serial baud rate (default: 19200)
+  --cat-addr 0xNN   Icom CI-V address (default: 0x94 = IC-7300)
+  --cat-tx-on HEX  Custom TX ON command in hex (for --ptt cat)
+  --cat-tx-off HEX Custom TX OFF command in hex (for --ptt cat)
 
 TX timing (CSMA/CA):
   --txdelay N       Preamble flags before data, in ms (default: 300)
@@ -290,29 +295,44 @@ sound card needed — plug the USB cable directly.
 # Audio: look for "CODEC" or "IC-7300" (e.g., plughw:2,0 on Linux)
 # Serial: /dev/ttyUSB0 or /dev/cu.usbmodem* (for CAT/PTT)
 
-# 2. HF packet at 300 baud with serial RTS PTT
+# 2. HF packet at 300 baud — Option A: serial RTS PTT
 ./bin/modemtnc -d plughw:2,0 -s 300 \
     --ptt rts --ptt-device /dev/ttyUSB0 \
     --txdelay 500 --link /tmp/kiss --monitor
 
-# 3. VHF/UHF packet at 1200 baud
+# 2. HF packet at 300 baud — Option B: Icom CI-V CAT PTT (no RTS needed)
+./bin/modemtnc -d plughw:2,0 -s 300 \
+    --ptt icom --ptt-device /dev/ttyUSB0 --cat-rate 19200 \
+    --txdelay 500 --link /tmp/kiss --monitor
+
+# 3. CI-V with different address (e.g. IC-9700 = 0xA2)
 ./bin/modemtnc -d plughw:2,0 -s 1200 \
-    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --ptt icom --ptt-device /dev/ttyUSB0 --cat-addr 0xA2 \
     --link /tmp/kiss --monitor
 
 # macOS: use cu.* device names
-./bin/modemtnc -s 300 \
-    --ptt rts --ptt-device /dev/cu.usbmodem14201 \
+./bin/modemtnc -d default -s 300 \
+    --ptt icom --ptt-device /dev/cu.usbmodem14201 --cat-rate 19200 \
     --txdelay 500 --link /tmp/kiss --monitor
 ```
 
 **IC-7300 radio settings:**
 - **Menu > Set > Connectors > USB AF Output Level**: adjust for good audio level (not clipping)
 - **Menu > Set > Connectors > USB AF/IF Output**: AF (audio frequency)
-- **Menu > Set > Connectors > USB Send**: off (we control PTT via RTS, not USB CI-V)
-- **Menu > Set > Connectors > CI-V USB Port**: unlink from PTT if using RTS
+- **Menu > Set > Connectors > CI-V Baud Rate**: 19200 (match `--cat-rate`)
+- **Menu > Set > Connectors > CI-V Address**: 94h (default, matches `--cat-addr 0x94`)
 - **Mode**: USB/LSB for 300 baud HF packet (SSB mode, not FM)
 - **Data mode**: DATA OFF (modemtnc handles the modem, not the radio)
+
+**Icom CI-V addresses** (common radios):
+
+| Radio | CI-V Address | Flag |
+|-------|-------------|------|
+| IC-7300 | 0x94 | `--cat-addr 0x94` (default) |
+| IC-7100 | 0x88 | `--cat-addr 0x88` |
+| IC-9700 | 0xA2 | `--cat-addr 0xA2` |
+| IC-705  | 0xA4 | `--cat-addr 0xA4` |
+| IC-7610 | 0x98 | `--cat-addr 0x98` |
 
 ### Yaesu FT-991A (HF + VHF/UHF, 300/1200/9600 baud)
 
@@ -324,30 +344,35 @@ The FT-991A has USB audio and USB serial built-in (similar to IC-7300).
 # Audio: "USB Audio CODEC" (e.g., plughw:1,0)
 # Serial: /dev/ttyUSB0 (CAT) — there are TWO serial ports, use the CAT one
 
-# 2. HF 300 baud packet (SSB mode on the radio)
+# 2. HF 300 baud — Option A: serial RTS PTT
 ./bin/modemtnc -d plughw:1,0 -s 300 \
     --ptt rts --ptt-device /dev/ttyUSB0 \
     --txdelay 500 --link /tmp/kiss --monitor
 
-# 3. VHF 1200 baud AFSK
+# 2. HF 300 baud — Option B: Yaesu CAT PTT (sends "TX1;" / "TX0;")
+./bin/modemtnc -d plughw:1,0 -s 300 \
+    --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 \
+    --txdelay 500 --link /tmp/kiss --monitor
+
+# 3. VHF 1200 baud AFSK with CAT PTT
 ./bin/modemtnc -d plughw:1,0 -s 1200 \
-    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 \
     --link /tmp/kiss --monitor
 
-# 4. UHF 9600 baud (requires flat audio — use DATA connector or 9600 baud jack)
+# 4. UHF 9600 baud (requires flat audio — use DATA connector)
 ./bin/modemtnc -d plughw:1,0 -s 9600 \
-    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 \
     --link /tmp/kiss --monitor
 
 # macOS
-./bin/modemtnc -s 1200 \
-    --ptt rts --ptt-device /dev/cu.usbserial-* \
+./bin/modemtnc -d default -s 1200 \
+    --ptt yaesu --ptt-device /dev/cu.usbserial-* --cat-rate 38400 \
     --link /tmp/kiss --monitor
 ```
 
 **FT-991A radio settings:**
 - **Menu 037 CAT SELECT**: USB
-- **Menu 038 CAT RATE**: 38400 (match with system)
+- **Menu 038 CAT RATE**: 38400 (must match `--cat-rate`)
 - **Menu 064 DATA MODE**: OTHERS (not PSK/RTTY — modemtnc is the modem)
 - **Menu 065 OTHER DISP (SSB)**: 3000 Hz
 - **Menu 070 DATA OUT LEVEL**: adjust (start at 50)
@@ -431,7 +456,10 @@ PTT methods to work with any radio setup:
 | **Serial DTR (inv)** | `--ptt -dtr` | Asserts DTR inverted (active low) | Interfaces with inverted logic |
 | **CM108 GPIO** | `--ptt cm108` | Sets GPIO pin on CM108/CM119 USB audio chip | Digirig, cheap USB sound cards |
 | **GPIO (sysfs)** | `--ptt gpio` | Writes to /sys/class/gpio (Raspberry Pi, etc.) | DRAWS HAT, custom GPIO wiring |
-| **CAT (hamlib)** | `--ptt hamlib` | Computer Aided Transceiver via hamlib | Any radio with CAT (future) |
+| **Icom CI-V** | `--ptt icom` | Sends CI-V PTT command over serial | IC-7300, IC-7100, IC-9700, IC-705 |
+| **Yaesu CAT** | `--ptt yaesu` | Sends "TX1;"/"TX0;" over serial | FT-991A, FT-710, FT-891, FT-DX10 |
+| **Kenwood** | `--ptt kenwood` | Sends "TX;"/"RX;" over serial | TS-590, TS-890, TS-480 |
+| **Custom CAT** | `--ptt cat` | User-provided hex commands | Any radio with serial CAT |
 
 The `+`/`-` prefix follows the Direwolf convention:
 `+rts` = active high (default), `-rts` = active low (inverted).

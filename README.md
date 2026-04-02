@@ -568,7 +568,19 @@ ALSA (Linux).  DSP derived from Dire Wolf.
 ./bin/ax25send -c YOURCALL /tmp/kiss --ui CQ "Hello from modemtnc"
 ```
 
-PTT methods: `vox` (default), `rts`/`+rts`/`-rts`, `dtr`/`+dtr`/`-dtr`, `cm108`, `gpio`.
+**PTT control** — without PTT the radio will not transmit. Choose the method
+that matches your setup:
+
+| Method | Flag | Radios / Interfaces |
+|--------|------|-----|
+| VOX | (default) | SignaLink USB, interfaces with hardware VOX |
+| Serial RTS/DTR | `--ptt rts` / `-rts` / `dtr` / `-dtr` | Homebrew cables, some radios |
+| CM108 GPIO | `--ptt cm108` | **Digirig** (auto-detected) |
+| Icom CI-V | `--ptt icom` | **IC-7300**, IC-7100, IC-9700, IC-705 |
+| Yaesu CAT | `--ptt yaesu` | **FT-991A**, FT-710, FT-891 |
+| Kenwood | `--ptt kenwood` | TS-590, TS-890 |
+| Custom CAT | `--ptt cat` | Any radio with serial CAT |
+| GPIO | `--ptt gpio` | Raspberry Pi, DRAWS HAT |
 
 Compatible with any audio interface: SignaLink USB, Digirig, DRAWS, DINAH,
 DMK URI, built-in soundcard, or SDR via audio pipe.
