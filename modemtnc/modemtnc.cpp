@@ -573,6 +573,7 @@ static void run_bridge(const Config& cfg) {
     demod.init(cfg.modem_type, actual_rate);
     modulator.init(cfg.modem_type, actual_rate, amp);
     hdlc_dec.init();
+    hdlc_dec.set_debug(cfg.debug);
 
     // KISS decoder for host → radio TX path
     ax25::kiss::Decoder kiss_dec;
