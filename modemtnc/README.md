@@ -212,49 +212,151 @@ bbs -c W1BBS /tmp/kiss                        # BBS server
 
 ## Examples
 
-### APRS Receive (VHF, 1200 baud)
+### Loopback Self-Test (no hardware)
 
 ```bash
-# Start TNC on 1200 baud
-./bin/modemtnc -s 1200 --link /tmp/kiss --monitor
-
-# In another terminal, send APRS beacon
-./bin/ax25send -c PU1ABC /tmp/kiss --pos -23.55,-46.63 "Mobile"
+./bin/modemtnc --loopback --monitor -c TEST           # 1200 baud AFSK
+./bin/modemtnc --loopback --monitor -c TEST -s 300    # 300 baud HF
+./bin/modemtnc --loopback --monitor -c TEST -s 9600   # 9600 baud G3RUH
 ```
 
-### High-Speed Packet (UHF, 9600 baud)
+### Digirig + Any VHF/UHF Radio (1200 baud)
+
+The [Digirig](https://digirig.net/) is a USB sound card with built-in
+CM108 GPIO for PTT. Connect the Digirig to the radio's mic/speaker
+or data port, and plug USB into the computer.
 
 ```bash
-# 9600 baud auto-selects 96000 Hz sample rate
-./bin/modemtnc -s 9600 --link /tmp/kiss --monitor
+# 1. Find the audio device
+./bin/modemtnc --list-devices
+# Look for "USB Audio CODEC" or "Digirig" — note the ALSA device (e.g., plughw:1,0)
 
-# Connect to a remote station
-./bin/ax25tnc -c W1AW -r W1BBS /tmp/kiss
+# 2. Run with CM108 PTT (auto-detects /dev/hidrawN)
+./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
+
+# 3. Or specify the HID device explicitly
+./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --ptt-device /dev/hidraw0 --link /tmp/kiss --monitor
+
+# 4. Connect clients
+./bin/ax25tnc -c YOURCALL -r REMOTE /tmp/kiss              # interactive
+./bin/ax25send -c YOURCALL /tmp/kiss --pos 42.36,-71.06 "Mobile"   # APRS beacon
 ```
 
-### HF Packet (300 baud)
+**Digirig PTT notes:**
+- The Digirig uses CM108 GPIO pin 3 (default) for PTT
+- If PTT does not key: check `ls -la /dev/hidraw*` permissions
+- Add udev rule: `echo 'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", GROUP="audio", MODE="0660"' | sudo tee /etc/udev/rules.d/99-cmedia.rules`
+
+### Icom IC-7300MKII (HF, 300 or 1200 baud)
+
+The IC-7300 has a built-in USB audio codec and USB serial port. No external
+sound card needed — plug the USB cable directly.
 
 ```bash
-./bin/modemtnc -s 300 --link /tmp/kiss --monitor
+# 1. Find audio and serial devices
+./bin/modemtnc --list-devices
+# Audio: look for "CODEC" or "IC-7300" (e.g., plughw:2,0 on Linux)
+# Serial: /dev/ttyUSB0 or /dev/cu.usbmodem* (for CAT/PTT)
+
+# 2. HF packet at 300 baud with serial RTS PTT
+./bin/modemtnc -d plughw:2,0 -s 300 \
+    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --txdelay 500 --link /tmp/kiss --monitor
+
+# 3. VHF/UHF packet at 1200 baud
+./bin/modemtnc -d plughw:2,0 -s 1200 \
+    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --link /tmp/kiss --monitor
+
+# macOS: use cu.* device names
+./bin/modemtnc -s 300 \
+    --ptt rts --ptt-device /dev/cu.usbmodem14201 \
+    --txdelay 500 --link /tmp/kiss --monitor
+```
+
+**IC-7300 radio settings:**
+- **Menu > Set > Connectors > USB AF Output Level**: adjust for good audio level (not clipping)
+- **Menu > Set > Connectors > USB AF/IF Output**: AF (audio frequency)
+- **Menu > Set > Connectors > USB Send**: off (we control PTT via RTS, not USB CI-V)
+- **Menu > Set > Connectors > CI-V USB Port**: unlink from PTT if using RTS
+- **Mode**: USB/LSB for 300 baud HF packet (SSB mode, not FM)
+- **Data mode**: DATA OFF (modemtnc handles the modem, not the radio)
+
+### Yaesu FT-991A (HF + VHF/UHF, 300/1200/9600 baud)
+
+The FT-991A has USB audio and USB serial built-in (similar to IC-7300).
+
+```bash
+# 1. Find devices
+./bin/modemtnc --list-devices
+# Audio: "USB Audio CODEC" (e.g., plughw:1,0)
+# Serial: /dev/ttyUSB0 (CAT) — there are TWO serial ports, use the CAT one
+
+# 2. HF 300 baud packet (SSB mode on the radio)
+./bin/modemtnc -d plughw:1,0 -s 300 \
+    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --txdelay 500 --link /tmp/kiss --monitor
+
+# 3. VHF 1200 baud AFSK
+./bin/modemtnc -d plughw:1,0 -s 1200 \
+    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --link /tmp/kiss --monitor
+
+# 4. UHF 9600 baud (requires flat audio — use DATA connector or 9600 baud jack)
+./bin/modemtnc -d plughw:1,0 -s 9600 \
+    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --link /tmp/kiss --monitor
+
+# macOS
+./bin/modemtnc -s 1200 \
+    --ptt rts --ptt-device /dev/cu.usbserial-* \
+    --link /tmp/kiss --monitor
+```
+
+**FT-991A radio settings:**
+- **Menu 037 CAT SELECT**: USB
+- **Menu 038 CAT RATE**: 38400 (match with system)
+- **Menu 064 DATA MODE**: OTHERS (not PSK/RTTY — modemtnc is the modem)
+- **Menu 065 OTHER DISP (SSB)**: 3000 Hz
+- **Menu 070 DATA OUT LEVEL**: adjust (start at 50)
+- **Menu 071 DATA IN LEVEL**: adjust (start at 50)
+- **Mode**: USB-D for HF packet, FM for VHF/UHF
+- For 9600 baud: use the mini-DIN DATA connector, not the mic jack
+
+### Digirig + IC-7300 or FT-991A
+
+You can also use a Digirig between the radio's audio jack and the computer,
+instead of the built-in USB audio. This is useful if the radio's USB audio
+has issues or you want to use the USB port for CAT control only.
+
+```bash
+# Digirig on audio, radio USB for PTT
+./bin/modemtnc -d plughw:1,0 -s 1200 \
+    --ptt rts --ptt-device /dev/ttyUSB0 \
+    --link /tmp/kiss --monitor
+
+# Or Digirig with its own CM108 PTT (no radio serial needed)
+./bin/modemtnc -d plughw:1,0 -s 1200 \
+    --ptt cm108 --link /tmp/kiss --monitor
 ```
 
 ### TCP KISS Server
 
 ```bash
 # Expose KISS via TCP for network clients
-./bin/modemtnc -s 1200 --server-port 8001 --monitor
+./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --server-port 8001 --monitor
 
 # Connect remotely
 ./bin/ax25tnc -c W1AW -r W1BBS localhost:8001
 ```
 
-### Loopback Self-Test
+### Generic VOX Setup
+
+If your interface has built-in VOX (some SignaLink USB configurations):
 
 ```bash
-# Quick sanity check -- no audio hardware needed
-./bin/modemtnc --loopback --monitor -c TEST
-./bin/modemtnc --loopback -c TEST -s 300
-./bin/modemtnc --loopback -c TEST -s 9600
+# No --ptt flag needed (defaults to VOX)
+./bin/modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
 ```
 
 ## Compatible Audio Interfaces
@@ -281,6 +383,72 @@ rtl_fm -f 144.39M -s 22050 - | sox -t raw -r 22050 -e signed -b 16 -c 1 - -t als
 
 # Terminal 2: modemtnc
 ./bin/modemtnc -s 1200 --link /tmp/kiss --monitor
+```
+
+## PTT (Push-To-Talk) Control
+
+Without PTT control, the radio will not transmit. modemtnc supports multiple
+PTT methods to work with any radio setup:
+
+| Method | Flag | How it works | Common use |
+|--------|------|-------------|------------|
+| **VOX** | (default) | Audio level triggers the radio's VOX circuit | SignaLink USB (turn DLY fully CCW) |
+| **Serial RTS** | `--ptt rts` | Asserts RTS line on a serial port | IC-7300, FT-991A (USB serial), homebrew cables |
+| **Serial DTR** | `--ptt dtr` | Asserts DTR line on a serial port | Some homebrew interfaces |
+| **CM108 GPIO** | `--ptt cm108` | Sets GPIO pin on CM108/CM119 USB audio chip | Digirig, cheap USB sound cards |
+| **GPIO (sysfs)** | `--ptt gpio` | Writes to /sys/class/gpio (Raspberry Pi, etc.) | DRAWS HAT, custom GPIO wiring |
+| **CAT (hamlib)** | `--ptt hamlib` | Computer Aided Transceiver via hamlib | Any radio with CAT (future) |
+
+### PTT Timing
+
+```
+              txdelay                  frame data              txtail
+    ├─────────────────────┤├──────────────────────────┤├──────────────┤
+PTT ─┐                                                                ┌── OFF
+     └────────────────────────────────────────────────────────────────┘
+     ON                        transmitting audio                    OFF
+```
+
+- `--txdelay N` (ms): silence before data — gives the remote receiver time to
+  open squelch and the PLL to lock. Default 300 ms (45 flags at 1200 baud).
+- `--txtail N` (ms): silence after data — ensures the last bit is fully
+  transmitted before PTT drops. Default 100 ms.
+
+### CM108/CM119 (Digirig) Setup
+
+The Digirig and many cheap USB audio interfaces use a CM108 or CM119 chip
+that has GPIO pins accessible via HID. modemtnc auto-detects the HID device.
+
+```bash
+# Check if a CM108/CM119 device is present
+ls -la /dev/hidraw*
+
+# If permission denied, add udev rule:
+echo 'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", GROUP="audio", MODE="0660"' \
+    | sudo tee /etc/udev/rules.d/99-cmedia.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# Verify your user is in the audio group
+groups $USER   # should include 'audio'
+sudo usermod -aG audio $USER   # if not, add and re-login
+```
+
+### Serial RTS/DTR Setup
+
+For radios with USB serial (IC-7300, FT-991A) or external serial adapters:
+
+```bash
+# Linux: find the serial port
+ls /dev/ttyUSB* /dev/ttyACM*
+
+# macOS: find the serial port
+ls /dev/cu.usbserial* /dev/cu.usbmodem*
+
+# Use RTS for PTT
+./bin/modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --monitor
+
+# If PTT is inverted (active low)
+./bin/modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --ptt-invert --monitor
 ```
 
 ## HDLC & FCS

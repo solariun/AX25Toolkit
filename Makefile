@@ -176,7 +176,8 @@ $(BINDIR)/ble_kiss_bridge: $(BINDIR)/bt_kiss_bridge
 # ── modemtnc — Software TNC with Soundcard DSP ────────────────────────────
 MODEM_DIR  = modemtnc
 MODEM_OBJS = $(BUILDDIR)/modemtnc.o $(BUILDDIR)/modem_dsp.o \
-             $(BUILDDIR)/modem_hdlc.o $(BUILDDIR)/modem_audio.o
+             $(BUILDDIR)/modem_hdlc.o $(BUILDDIR)/modem_audio.o \
+             $(BUILDDIR)/modem_ptt.o
 
 ifeq ($(UNAME), Darwin)
     MODEM_AUDIO_SRC = $(MODEM_DIR)/audio_coreaudio.cpp
@@ -196,6 +197,9 @@ $(BUILDDIR)/modem_hdlc.o: $(MODEM_DIR)/hdlc.cpp $(MODEM_DIR)/hdlc.h | $(BUILDDIR
 	$(CXX) $(CXXFLAGS) -I$(MODEM_DIR) -c -o $@ $<
 
 $(BUILDDIR)/modem_audio.o: $(MODEM_AUDIO_SRC) $(MODEM_DIR)/audio.h | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) -I$(MODEM_DIR) -c -o $@ $<
+
+$(BUILDDIR)/modem_ptt.o: $(MODEM_DIR)/ptt.cpp $(MODEM_DIR)/ptt.h | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -I$(MODEM_DIR) -c -o $@ $<
 
 $(BINDIR)/modemtnc: $(MODEM_OBJS) $(LIB_OBJ) | $(BINDIR)

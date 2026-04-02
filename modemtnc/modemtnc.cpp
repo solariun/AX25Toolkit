@@ -35,6 +35,7 @@
 #include "audio.h"
 #include "modem.h"
 #include "hdlc.h"
+#include "ptt.h"
 #include "ax25lib.hpp"
 #include "ax25dump.hpp"
 
@@ -59,6 +60,9 @@ struct Config {
     int         slottime_ms   = 100;
     int         volume        = 50;
     bool        list_devices  = false;
+
+    // PTT control
+    ptt::Config ptt;
 };
 
 static void signal_handler(int) { g_running = false; }
@@ -167,6 +171,14 @@ static void usage() {
         "  --link PATH       PTY symlink path (default: /tmp/kiss)\n"
         "  --server-port N   TCP KISS server port (disabled by default)\n"
         "\n"
+        "PTT control:\n"
+        "  --ptt METHOD      PTT method: vox, rts, dtr, cm108, gpio (default: vox)\n"
+        "  --ptt-device DEV  Serial port or HID device for PTT\n"
+        "                      rts/dtr: /dev/ttyUSB0, /dev/cu.usbserial-*\n"
+        "                      cm108:   /dev/hidraw0 (auto-detected if omitted)\n"
+        "  --ptt-gpio N      GPIO pin number (cm108: 1-8, default 3; gpio: sysfs num)\n"
+        "  --ptt-invert      Invert PTT signal (active low)\n"
+        "\n"
         "TX timing:\n"
         "  --txdelay N       Preamble delay in ms (default: 300)\n"
         "  --txtail N        TX tail in ms (default: 100)\n"
@@ -185,7 +197,8 @@ static void usage() {
         "  modemtnc --list-devices                           # find your audio device\n"
         "  modemtnc --loopback --monitor                     # self-test\n"
         "  modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor\n"
-        "  modemtnc -d default -s 300 --link /tmp/kiss --monitor\n"
+        "  modemtnc --ptt cm108 -s 1200 --link /tmp/kiss --monitor   # Digirig\n"
+        "  modemtnc --ptt rts --ptt-device /dev/ttyUSB0 -s 1200 --monitor\n"
         "  modemtnc -s 9600 --link /tmp/kiss --server-port 8001 --monitor\n"
         "\n"
         "Connect a KISS client:\n"
@@ -210,6 +223,10 @@ static Config parse_args(int argc, char* argv[]) {
         {"persist",     required_argument, nullptr, 3},
         {"slottime",    required_argument, nullptr, 4},
         {"volume",      required_argument, nullptr, 5},
+        {"ptt",         required_argument, nullptr, 6},
+        {"ptt-device",  required_argument, nullptr, 7},
+        {"ptt-gpio",    required_argument, nullptr, 8},
+        {"ptt-invert",  no_argument,       nullptr, 9},
         {"help",        no_argument,       nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
@@ -231,6 +248,20 @@ static Config parse_args(int argc, char* argv[]) {
             case 3:   cfg.persist = atoi(optarg); break;
             case 4:   cfg.slottime_ms = atoi(optarg); break;
             case 5:   cfg.volume = atoi(optarg); break;
+            case 6: { // --ptt METHOD
+                std::string m = optarg;
+                if (m == "vox")       cfg.ptt.method = ptt::VOX;
+                else if (m == "rts")  cfg.ptt.method = ptt::SERIAL_RTS;
+                else if (m == "dtr")  cfg.ptt.method = ptt::SERIAL_DTR;
+                else if (m == "cm108") cfg.ptt.method = ptt::CM108;
+                else if (m == "gpio") cfg.ptt.method = ptt::GPIO;
+                else if (m == "hamlib" || m == "cat") cfg.ptt.method = ptt::HAMLIB;
+                else { fprintf(stderr, "Unknown PTT method: %s\n", optarg); exit(1); }
+                break;
+            }
+            case 7:   cfg.ptt.device = optarg; break;
+            case 8:   cfg.ptt.gpio_pin = atoi(optarg); break;
+            case 9:   cfg.ptt.invert = true; break;
             case 'h': usage(); exit(0);
             default:  usage(); exit(1);
         }
@@ -360,6 +391,13 @@ static void run_bridge(const Config& cfg) {
         printf("  TCP server : port %d\n", cfg.server_port);
     printf("\n  Example:\n      ax25tnc -c W1AW -r W1BBS-1 %s\n", cfg.link_path.c_str());
     printf("--------------------------------------------------------------------\n");
+    // Init PTT
+    ptt::Controller ptt_ctl;
+    if (!ptt_ctl.init(cfg.ptt)) {
+        fprintf(stderr, "Failed to initialize PTT — exiting\n");
+        exit(1);
+    }
+
     if (cfg.monitor) printf("  Monitor on.  Ctrl-C to stop.\n\n");
 
     // Init modem
@@ -452,8 +490,9 @@ static void run_bridge(const Config& cfg) {
                         hdlc_enc.send_frame(kf.data.data(), kf.data.size(), flags, 2);
                         modulator.put_quiet_ms(kp.txtail_10ms * 10);
 
-                        // Write TX audio
+                        // Write TX audio with PTT control
                         if (!tx_audio.empty()) {
+                            ptt_ctl.set(true);   // Key transmitter
                             size_t off = 0;
                             while (off < tx_audio.size()) {
                                 int chunk = std::min((int)(tx_audio.size() - off), 1024);
@@ -462,6 +501,7 @@ static void run_bridge(const Config& cfg) {
                                 else break;
                             }
                             audio->flush();
+                            ptt_ctl.set(false);  // Release transmitter
                         }
                     }
                     // Handle KISS parameter commands
@@ -498,6 +538,7 @@ static void run_bridge(const Config& cfg) {
                         hdlc_enc.send_frame(kf.data.data(), kf.data.size(), flags, 2);
                         modulator.put_quiet_ms(kp.txtail_10ms * 10);
                         if (!tx_audio.empty()) {
+                            ptt_ctl.set(true);
                             size_t off = 0;
                             while (off < tx_audio.size()) {
                                 int chunk = std::min((int)(tx_audio.size() - off), 1024);
@@ -506,6 +547,7 @@ static void run_bridge(const Config& cfg) {
                                 else break;
                             }
                             audio->flush();
+                            ptt_ctl.set(false);
                         }
                     }
                 }
@@ -523,6 +565,7 @@ static void run_bridge(const Config& cfg) {
     if (tcp_srv >= 0) ::close(tcp_srv);
     for (int fd : tcp_clients) ::close(fd);
 
+    ptt_ctl.close();
     delete audio;
     printf("\n  Session ended.\n");
 }
