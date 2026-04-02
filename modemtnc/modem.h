@@ -9,13 +9,16 @@
 namespace modem {
 
 enum Type {
+    // Implemented — selectable via -s SPEED
     AFSK_1200,   // Bell 202: mark=1200 Hz, space=2200 Hz, 1200 baud
     AFSK_300,    // HF: mark=1600 Hz, space=1800 Hz, 300 baud
     GMSK_9600,   // G3RUH scrambled baseband, 9600 baud
-    PSK_2400,    // QPSK V.26B, 2400 bps
-    PSK_4800,    // 8PSK, 4800 bps
-    AIS,         // 9600 baud baseband (maritime)
-    EAS,         // AFSK 521 baud (Emergency Alert)
+
+    // Planned — DSP init exists but CLI not yet wired
+    PSK_2400,    // QPSK V.26B, 2400 bps (future)
+    PSK_4800,    // 8PSK, 4800 bps (future)
+    AIS,         // 9600 baud baseband, maritime (future)
+    EAS,         // AFSK 521 baud, Emergency Alert (future)
 };
 
 // Maximum FIR filter taps

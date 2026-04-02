@@ -543,28 +543,34 @@ and GMSK 9600 (UHF).  Zero external dependencies — uses CoreAudio (macOS) or
 ALSA (Linux).  DSP derived from Dire Wolf.
 
 ```bash
-# Run with soundcard
-./bin/modemtnc -s 1200 --link /tmp/kiss --monitor
-
-# HF 300 baud
-./bin/modemtnc -s 300 --link /tmp/kiss --monitor
-
-# 9600 baud (auto 96 kHz sample rate)
-./bin/modemtnc -s 9600 --link /tmp/kiss --monitor
-
 # Self-test (no audio hardware needed)
 ./bin/modemtnc --loopback --monitor
 
-# With TCP server for remote clients
-./bin/modemtnc -s 1200 --link /tmp/kiss --server-port 8001 --monitor
-```
-
-List available audio devices:
-```bash
+# List audio devices
 ./bin/modemtnc --list-devices
+
+# Digirig (CM108 PTT auto-detected)
+./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
+
+# IC-7300 / FT-991A (serial RTS PTT)
+./bin/modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
+
+# HF 300 baud (SSB)
+./bin/modemtnc -d plughw:1,0 -s 300 --ptt rts --ptt-device /dev/ttyUSB0 --txdelay 500 --link /tmp/kiss --monitor
+
+# 9600 baud (auto 96 kHz sample rate)
+./bin/modemtnc -d plughw:1,0 -s 9600 --ptt cm108 --link /tmp/kiss --monitor
+
+# VOX (default — no --ptt flag)
+./bin/modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
+
+# Test TX: send a UI frame
+./bin/ax25send -c YOURCALL /tmp/kiss --ui CQ "Hello from modemtnc"
 ```
 
-Compatible with any audio interface: SignaLink USB, DRAWS, DINAH, SHARI,
+PTT methods: `vox` (default), `rts`/`+rts`/`-rts`, `dtr`/`+dtr`/`-dtr`, `cm108`, `gpio`.
+
+Compatible with any audio interface: SignaLink USB, Digirig, DRAWS, DINAH,
 DMK URI, built-in soundcard, or SDR via audio pipe.
 
 Full reference: [modemtnc/README.md](modemtnc/README.md)

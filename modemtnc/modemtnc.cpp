@@ -180,11 +180,14 @@ static void usage() {
         "                      -dtr      assert DTR inverted (active low)\n"
         "                      cm108     CM108/CM119 USB GPIO (Digirig)\n"
         "                      gpio      Linux sysfs GPIO\n"
+        "                      hamlib    CAT control via hamlib (future)\n"
         "  --ptt-device DEV  Serial port or HID device for PTT\n"
         "                      rts/dtr: /dev/ttyUSB0, /dev/cu.usbserial-*\n"
         "                      cm108:   /dev/hidraw0 (auto-detected if omitted)\n"
         "  --ptt-gpio N      GPIO pin number (cm108: 1-8, default 3; gpio: sysfs num)\n"
         "  --ptt-invert      Invert PTT signal (active low)\n"
+        "  --hamlib-model N  Hamlib rig model number (-1=auto, 2=rigctld)\n"
+        "  --hamlib-rate N   CAT serial port baud rate (0=default)\n"
         "\n"
         "TX timing:\n"
         "  --txdelay N       Preamble delay in ms (default: 300)\n"
@@ -234,6 +237,8 @@ static Config parse_args(int argc, char* argv[]) {
         {"ptt-device",  required_argument, nullptr, 7},
         {"ptt-gpio",    required_argument, nullptr, 8},
         {"ptt-invert",  no_argument,       nullptr, 9},
+        {"hamlib-model", required_argument, nullptr, 10},
+        {"hamlib-rate",  required_argument, nullptr, 11},
         {"help",        no_argument,       nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
@@ -271,6 +276,8 @@ static Config parse_args(int argc, char* argv[]) {
             case 7:   cfg.ptt.device = optarg; break;
             case 8:   cfg.ptt.gpio_pin = atoi(optarg); break;
             case 9:   cfg.ptt.invert = true; break;
+            case 10:  cfg.ptt.hamlib_model = atoi(optarg); break;
+            case 11:  cfg.ptt.hamlib_rate = atoi(optarg); break;
             case 'h': usage(); exit(0);
             default:  usage(); exit(1);
         }

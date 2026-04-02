@@ -26,11 +26,15 @@ make modemtnc
 
 ## Supported Modems
 
-| Mode | Baud | Modulation | Typical Use | Sample Rate |
-|------|------|------------|-------------|-------------|
-| AFSK 1200 | 1200 | Bell 202 (1200/2200 Hz) | VHF/UHF packet, APRS | 44100 Hz |
-| AFSK 300 | 300 | 1600/1800 Hz | HF packet (SSB) | 44100 Hz |
-| GMSK 9600 | 9600 | G3RUH scrambled baseband | High-speed UHF | 96000 Hz (auto) |
+| Mode | Baud | Modulation | Typical Use | Sample Rate | Status |
+|------|------|------------|-------------|-------------|--------|
+| AFSK 1200 | 1200 | Bell 202 (1200/2200 Hz) | VHF/UHF packet, APRS | 44100 Hz | **Implemented** |
+| AFSK 300 | 300 | 1600/1800 Hz | HF packet (SSB) | 44100 Hz | **Implemented** |
+| GMSK 9600 | 9600 | G3RUH scrambled baseband | High-speed UHF | 96000 Hz (auto) | **Implemented** |
+| PSK 2400 | 2400 | QPSK V.26B | — | — | Planned |
+| PSK 4800 | 4800 | 8PSK | — | — | Planned |
+| AIS | 9600 | Baseband | Maritime AIS | — | Planned |
+| EAS/SAME | 521 | AFSK (2083/1563 Hz) | Emergency Alert | — | Planned |
 
 The modem type is selected at startup via `-s SPEED`. For 9600 baud, the
 sample rate is automatically raised to 96000 Hz (override with `-r`).
@@ -160,6 +164,24 @@ KISS interface:
   --server-port N   TCP KISS server port (disabled by default)
                       Allows remote/network KISS clients
 
+PTT control:
+  --ptt METHOD      PTT method (default: vox):
+                      vox       audio-triggered (no hardware control)
+                      rts, +rts assert RTS on serial port
+                      -rts      assert RTS inverted (active low)
+                      dtr, +dtr assert DTR on serial port
+                      -dtr      assert DTR inverted (active low)
+                      cm108     CM108/CM119 USB GPIO (Digirig)
+                      gpio      Linux sysfs GPIO
+                      hamlib    CAT control via hamlib (future)
+  --ptt-device DEV  Serial port or HID device for PTT
+                      rts/dtr: /dev/ttyUSB0, /dev/cu.usbserial-*
+                      cm108:   /dev/hidraw0 (auto-detected if omitted)
+  --ptt-gpio N      GPIO pin number (cm108: 1-8, default 3; gpio: sysfs num)
+  --ptt-invert      Invert PTT signal (active low)
+  --hamlib-model N  Hamlib rig model number (-1=auto, 2=rigctld)
+  --hamlib-rate N   CAT serial port baud rate (0=default)
+
 TX timing (CSMA/CA):
   --txdelay N       Preamble flags before data, in ms (default: 300)
                       Gives the remote receiver time to lock PLL
@@ -189,24 +211,34 @@ modemtnc --list-devices
 # Self-test (no hardware)
 modemtnc --loopback --monitor
 
-# Standard VHF packet (1200 baud AFSK)
+# Standard VHF packet (1200 baud AFSK) with VOX (default)
 modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
 
+# With Digirig PTT (CM108 GPIO auto-detected)
+modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
+
+# With serial RTS PTT (IC-7300, FT-991A)
+modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
+
+# Inverted RTS PTT (active low)
+modemtnc -d plughw:1,0 -s 1200 --ptt -rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
+
 # HF packet (300 baud AFSK via SSB)
-modemtnc -d plughw:1,0 -s 300 --link /tmp/kiss --monitor
+modemtnc -d plughw:1,0 -s 300 --ptt rts --ptt-device /dev/ttyUSB0 --txdelay 500 --link /tmp/kiss --monitor
 
 # High-speed UHF (9600 baud G3RUH)
-modemtnc -d plughw:1,0 -s 9600 --link /tmp/kiss --monitor
+modemtnc -d plughw:1,0 -s 9600 --ptt cm108 --link /tmp/kiss --monitor
+
+# GPIO PTT on Raspberry Pi (pin 25)
+modemtnc -d plughw:1,0 -s 1200 --ptt gpio --ptt-gpio 25 --link /tmp/kiss --monitor
 
 # With TCP server for remote clients
-modemtnc -d default -s 1200 --link /tmp/kiss --server-port 8001 --monitor
-
-# Adjust TX timing for long-distance HF
-modemtnc -d plughw:1,0 -s 300 --txdelay 500 --txtail 200 --link /tmp/kiss --monitor
+modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --server-port 8001 --link /tmp/kiss --monitor
 
 # Connect clients to the TNC
 ax25tnc -c W1AW -r W1BBS /tmp/kiss           # interactive terminal
 ax25send -c W1AW /tmp/kiss --pos 42.36,-71.06 "Boston"   # APRS beacon
+ax25send -c W1AW /tmp/kiss --ui CQ "PTT test"            # quick TX test
 bbs -c W1BBS /tmp/kiss                        # BBS server
 ```
 
