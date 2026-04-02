@@ -60,6 +60,8 @@ struct Config {
     int         slottime_ms   = 100;
     int         volume        = 50;
     bool        list_devices  = false;
+    bool        test_ptt      = false;  // toggle PTT 3 times and exit
+    std::string test_tx;                // send a UI frame and exit (callsign>dest text)
 
     // PTT control
     ptt::Config ptt;
@@ -211,6 +213,9 @@ static void usage() {
         "\n"
         "Testing:\n"
         "  --loopback        Self-test: TX -> RX in memory (no audio device)\n"
+        "  --test-ptt        Toggle PTT 3 times (1s on, 1s off) and exit\n"
+        "  --test-tx TEXT    Send one UI frame (CALL>CQ TEXT) via audio and exit\n"
+        "                      e.g. --test-tx \"Hello from modemtnc\"\n"
         "  -h, --help        Show this help\n"
         "\n"
         "Examples:\n"
@@ -254,6 +259,8 @@ static Config parse_args(int argc, char* argv[]) {
         {"cat-addr",     required_argument, nullptr, 13},
         {"cat-tx-on",    required_argument, nullptr, 14},
         {"cat-tx-off",   required_argument, nullptr, 15},
+        {"test-ptt",     no_argument,       nullptr, 16},
+        {"test-tx",      required_argument, nullptr, 17},
         {"help",        no_argument,       nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
@@ -301,6 +308,8 @@ static Config parse_args(int argc, char* argv[]) {
             case 13:  cfg.ptt.cat_addr = (int)strtol(optarg, NULL, 0); break;
             case 14:  cfg.ptt.cat_tx_on = optarg; break;
             case 15:  cfg.ptt.cat_tx_off = optarg; break;
+            case 16:  cfg.test_ptt = true; break;
+            case 17:  cfg.test_tx = optarg; break;
             case 'h': usage(); exit(0);
             default:  usage(); exit(1);
         }
@@ -325,6 +334,106 @@ struct KissParams {
     int txtail_10ms = 10;
     bool fullduplex = false;
 };
+
+// ---------------------------------------------------------------------------
+//  Loopback self-test
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  Test PTT — toggle 3 times
+// ---------------------------------------------------------------------------
+static void run_test_ptt(const Config& cfg) {
+    printf("=== PTT Test ===\n");
+    ptt::Controller ptt_ctl;
+    if (!ptt_ctl.init(cfg.ptt)) {
+        fprintf(stderr, "Failed to initialize PTT\n");
+        return;
+    }
+    for (int i = 1; i <= 3 && g_running; i++) {
+        printf("  [%d/3] PTT ON  ...", i); fflush(stdout);
+        ptt_ctl.set(true);
+        usleep(1000000);  // 1s
+        printf(" OFF\n");
+        ptt_ctl.set(false);
+        if (i < 3) usleep(1000000);  // 1s pause between
+    }
+    ptt_ctl.close();
+    printf("PTT test done.\n");
+}
+
+// ---------------------------------------------------------------------------
+//  Test TX — send one UI frame via audio and exit
+// ---------------------------------------------------------------------------
+static void run_test_tx(const Config& cfg) {
+    printf("=== TX Test ===\n");
+
+    // Open audio
+    AudioDevice* audio = AudioDevice::create();
+    int amp = 16000 * cfg.volume / 100;
+    if (!audio->open(cfg.audio_device.c_str(), cfg.sample_rate, false, true)) {
+        fprintf(stderr, "Failed to open audio device for playback\n");
+        return;
+    }
+
+    // Init PTT
+    ptt::Controller ptt_ctl;
+    if (!ptt_ctl.init(cfg.ptt)) {
+        fprintf(stderr, "Failed to initialize PTT\n");
+        delete audio;
+        return;
+    }
+
+    // Init modem
+    modem::Modulator modulator;
+    hdlc::Encoder hdlc_enc;
+    modulator.init(cfg.modem_type, cfg.sample_rate, amp);
+
+    std::vector<int16_t> tx_audio;
+    modulator.set_on_sample([&tx_audio](int16_t s) { tx_audio.push_back(s); });
+    hdlc_enc.set_on_bit([&modulator](int bit) { modulator.put_bit(bit); });
+
+    // Build UI frame: CALL>CQ text
+    ax25::Frame f;
+    f.dest = ax25::Addr::make("CQ");
+    f.src  = ax25::Addr::make(cfg.callsign.empty() ? "TEST" : cfg.callsign.c_str());
+    f.ctrl = 0x03;  // UI
+    f.pid  = 0xF0;
+    f.info.assign(cfg.test_tx.begin(), cfg.test_tx.end());
+    auto raw = f.encode();
+
+    int flags = cfg.txdelay_ms * cfg.baud / (8 * 1000);
+    if (flags < 5) flags = 5;
+
+    printf("  TX: %s > CQ [UI] \"%s\"\n", f.src.str().c_str(), cfg.test_tx.c_str());
+    printf("  Modem: %d baud, %d Hz\n", cfg.baud, cfg.sample_rate);
+
+    // Encode
+    hdlc_enc.send_frame(raw.data(), raw.size(), flags, 2);
+    modulator.put_quiet_ms(cfg.txtail_ms);
+
+    printf("  Audio: %zu samples (%.1f ms)\n",
+           tx_audio.size(), 1000.0 * tx_audio.size() / cfg.sample_rate);
+
+    // PTT ON → send audio → PTT OFF
+    printf("  PTT ON\n");
+    ptt_ctl.set(true);
+
+    size_t off = 0;
+    while (off < tx_audio.size()) {
+        int chunk = std::min((int)(tx_audio.size() - off), 1024);
+        int written = audio->write(tx_audio.data() + off, chunk);
+        if (written > 0) off += written;
+        else break;
+    }
+    audio->flush();
+
+    printf("  PTT OFF\n");
+    ptt_ctl.set(false);
+
+    ptt_ctl.close();
+    audio->close();
+    delete audio;
+    printf("TX test done.\n");
+}
 
 // ---------------------------------------------------------------------------
 //  Loopback self-test
@@ -621,6 +730,10 @@ int main(int argc, char* argv[]) {
 
     if (cfg.list_devices) {
         AudioDevice::list_devices();
+    } else if (cfg.test_ptt) {
+        run_test_ptt(cfg);
+    } else if (!cfg.test_tx.empty()) {
+        run_test_tx(cfg);
     } else if (cfg.loopback) {
         run_loopback(cfg);
     } else {
