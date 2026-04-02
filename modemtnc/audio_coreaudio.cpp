@@ -235,6 +235,13 @@ public:
             AudioQueueFlush(output_queue_);
     }
 
+    void wait_drain() override {
+        if (!has_playback_) return;
+        // Wait until all NUM_BUFFERS are returned (= nothing queued)
+        std::unique_lock<std::mutex> lk(tx_mtx_);
+        tx_cv_.wait(lk, [this] { return tx_free_count_ >= NUM_BUFFERS || !has_playback_; });
+    }
+
     void close() override {
         if (input_queue_) {
             AudioQueueStop(input_queue_, true);

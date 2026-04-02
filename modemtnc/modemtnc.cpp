@@ -54,10 +54,10 @@ struct Config {
     int         server_port   = 0;
     bool        monitor       = false;
     bool        loopback      = false;
-    int         txdelay_ms    = 300;
-    int         txtail_ms     = 100;
+    int         txdelay       = 40;   // in 10ms units (40 = 400ms)
+    int         txtail        = 10;   // in 10ms units (10 = 100ms)
     int         persist       = 63;
-    int         slottime_ms   = 100;
+    int         slottime      = 10;   // in 10ms units (10 = 100ms)
     int         volume        = 50;
     bool        list_devices  = false;
     bool        test_ptt      = false;  // toggle PTT 3 times and exit
@@ -201,11 +201,11 @@ static void usage() {
         "  --cat-tx-on HEX  Custom TX ON command in hex (e.g. FEFE94E01C0001FD)\n"
         "  --cat-tx-off HEX Custom TX OFF command in hex\n"
         "\n"
-        "TX timing:\n"
-        "  --txdelay N       Preamble delay in ms (default: 300)\n"
-        "  --txtail N        TX tail in ms (default: 100)\n"
+        "TX timing (values in 10ms units, like KISS standard):\n"
+        "  --txdelay N       Preamble delay (default: 40 = 400ms)\n"
+        "  --txtail N        TX tail (default: 10 = 100ms)\n"
         "  --persist N       CSMA persistence 0-255 (default: 63)\n"
-        "  --slottime N      CSMA slot time in ms (default: 100)\n"
+        "  --slottime N      CSMA slot time (default: 10 = 100ms)\n"
         "\n"
         "Display:\n"
         "  -c CALL           Callsign (shown in monitor output)\n"
@@ -277,10 +277,10 @@ static Config parse_args(int argc, char* argv[]) {
             case 'M': cfg.monitor = true; break;
             case 'B': cfg.loopback = true; break;
             case 'D': cfg.list_devices = true; break;
-            case 1:   cfg.txdelay_ms = atoi(optarg); break;
-            case 2:   cfg.txtail_ms = atoi(optarg); break;
+            case 1:   cfg.txdelay = atoi(optarg); break;
+            case 2:   cfg.txtail = atoi(optarg); break;
             case 3:   cfg.persist = atoi(optarg); break;
-            case 4:   cfg.slottime_ms = atoi(optarg); break;
+            case 4:   cfg.slottime = atoi(optarg); break;
             case 5:   cfg.volume = atoi(optarg); break;
             case 6: { // --ptt METHOD
                 std::string m = optarg;
@@ -328,10 +328,10 @@ static Config parse_args(int argc, char* argv[]) {
 //  KISS parameter handling
 // ---------------------------------------------------------------------------
 struct KissParams {
-    int txdelay_10ms = 30;   // in 10ms units
-    int persist = 63;
-    int slottime_10ms = 10;
-    int txtail_10ms = 10;
+    int txdelay  = 40;   // in 10ms units (KISS standard)
+    int persist  = 63;
+    int slottime = 10;   // in 10ms units
+    int txtail   = 10;   // in 10ms units
     bool fullduplex = false;
 };
 
@@ -400,15 +400,18 @@ static void run_test_tx(const Config& cfg) {
     f.info.assign(cfg.test_tx.begin(), cfg.test_tx.end());
     auto raw = f.encode();
 
-    int flags = cfg.txdelay_ms * cfg.baud / (8 * 1000);
+    int txdelay_ms = cfg.txdelay * 10;   // 10ms units → ms
+    int txtail_ms  = cfg.txtail * 10;
+    int flags = txdelay_ms * cfg.baud / (8 * 1000);
     if (flags < 5) flags = 5;
 
     printf("  TX: %s > CQ [UI] \"%s\"\n", f.src.str().c_str(), cfg.test_tx.c_str());
-    printf("  Modem: %d baud, %d Hz\n", cfg.baud, cfg.sample_rate);
+    printf("  Modem: %d baud, %d Hz, txdelay=%dms, txtail=%dms\n",
+           cfg.baud, cfg.sample_rate, txdelay_ms, txtail_ms);
 
     // Encode
     hdlc_enc.send_frame(raw.data(), raw.size(), flags, 2);
-    modulator.put_quiet_ms(cfg.txtail_ms);
+    modulator.put_quiet_ms(txtail_ms);
 
     printf("  Audio: %zu samples (%.1f ms)\n",
            tx_audio.size(), 1000.0 * tx_audio.size() / cfg.sample_rate);
@@ -425,11 +428,7 @@ static void run_test_tx(const Config& cfg) {
         else break;
     }
     audio->flush();
-
-    // Wait for audio to finish playing
-    int dur_ms = (int)(1000L * (long)tx_audio.size() / cfg.sample_rate);
-    printf("  Waiting %d ms for audio to play...\n", dur_ms);
-    usleep((unsigned)(dur_ms + 50) * 1000);
+    audio->wait_drain();  // block until all audio played
 
     printf("  PTT OFF\n");
     ptt_ctl.set(false);
@@ -488,8 +487,8 @@ static void run_loopback(const Config& cfg) {
 
     printf("TX: %s -> %s [UI] \"%s\"\n", f.src.str().c_str(), f.dest.str().c_str(), msg);
 
-    // Calculate preamble flags for txdelay
-    int flags = cfg.txdelay_ms * cfg.baud / (8 * 1000);
+    // Calculate preamble flags for txdelay (cfg.txdelay is in 10ms units)
+    int flags = (cfg.txdelay * 10) * cfg.baud / (8 * 1000);
     if (flags < 5) flags = 5;
 
     // Encode and modulate
@@ -586,10 +585,10 @@ static void run_bridge(const Config& cfg) {
 
     // KISS params
     KissParams kp;
-    kp.txdelay_10ms = cfg.txdelay_ms / 10;
-    kp.persist = cfg.persist;
-    kp.slottime_10ms = cfg.slottime_ms / 10;
-    kp.txtail_10ms = cfg.txtail_ms / 10;
+    kp.txdelay  = cfg.txdelay;   // already in 10ms units
+    kp.persist  = cfg.persist;
+    kp.slottime = cfg.slottime;
+    kp.txtail   = cfg.txtail;
 
     // RX audio thread
     std::thread rx_thread([&]() {
@@ -636,12 +635,12 @@ static void run_bridge(const Config& cfg) {
                         // Data frame → TX
                         if (cfg.monitor) show_frame(kf.data.data(), kf.data.size(), "-> AIR");
 
-                        int flags = kp.txdelay_10ms * cfg.baud / (8 * 100);
+                        int flags = kp.txdelay * cfg.baud / (8 * 100);
                         if (flags < 5) flags = 5;
 
                         tx_audio.clear();
                         hdlc_enc.send_frame(kf.data.data(), kf.data.size(), flags, 2);
-                        modulator.put_quiet_ms(kp.txtail_10ms * 10);
+                        modulator.put_quiet_ms(kp.txtail * 10);
 
                         // Write TX audio with PTT control
                         if (!tx_audio.empty()) {
@@ -654,21 +653,19 @@ static void run_bridge(const Config& cfg) {
                                 else break;
                             }
                             audio->flush();
-                            // Wait for audio to finish playing before releasing PTT
-                            int duration_ms = (int)(1000L * (long)tx_audio.size() / cfg.sample_rate);
-                            usleep((unsigned)(duration_ms + 50) * 1000);
-                            ptt_ctl.set(false);  // Release transmitter
+                            audio->wait_drain();  // block until audio played
+                            ptt_ctl.set(false);   // Release transmitter
                         }
                     }
                     // Handle KISS parameter commands
                     else if (kf.command == ax25::kiss::Cmd::TxDelay && kf.data.size() >= 1)
-                        kp.txdelay_10ms = kf.data[0];
+                        kp.txdelay = kf.data[0];
                     else if (kf.command == ax25::kiss::Cmd::Persistence && kf.data.size() >= 1)
                         kp.persist = kf.data[0];
                     else if (kf.command == ax25::kiss::Cmd::SlotTime && kf.data.size() >= 1)
-                        kp.slottime_10ms = kf.data[0];
+                        kp.slottime = kf.data[0];
                     else if (kf.command == ax25::kiss::Cmd::TxTail && kf.data.size() >= 1)
-                        kp.txtail_10ms = kf.data[0];
+                        kp.txtail = kf.data[0];
                 }
             }
         }
@@ -688,11 +685,11 @@ static void run_bridge(const Config& cfg) {
                 for (auto& kf : frames) {
                     if (kf.command == ax25::kiss::Cmd::Data && kf.data.size() > 0) {
                         if (cfg.monitor) show_frame(kf.data.data(), kf.data.size(), "-> AIR");
-                        int flags = kp.txdelay_10ms * cfg.baud / (8 * 100);
+                        int flags = kp.txdelay * cfg.baud / (8 * 100);
                         if (flags < 5) flags = 5;
                         tx_audio.clear();
                         hdlc_enc.send_frame(kf.data.data(), kf.data.size(), flags, 2);
-                        modulator.put_quiet_ms(kp.txtail_10ms * 10);
+                        modulator.put_quiet_ms(kp.txtail * 10);
                         if (!tx_audio.empty()) {
                             ptt_ctl.set(true);
                             size_t off = 0;
@@ -703,8 +700,7 @@ static void run_bridge(const Config& cfg) {
                                 else break;
                             }
                             audio->flush();
-                            int dur_ms = (int)(1000L * (long)tx_audio.size() / cfg.sample_rate);
-                            usleep((unsigned)(dur_ms + 50) * 1000);
+                            audio->wait_drain();
                             ptt_ctl.set(false);
                         }
                     }

@@ -21,6 +21,9 @@ public:
     // Flush any buffered output
     virtual void flush() = 0;
 
+    // Block until all queued output has been played (event-driven drain)
+    virtual void wait_drain() = 0;
+
     // Close device
     virtual void close() = 0;
 

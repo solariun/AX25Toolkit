@@ -56,7 +56,11 @@ public:
     }
 
     void flush() override {
-        if (play_) snd_pcm_drain(play_);
+        if (play_) snd_pcm_drain(play_);  // ALSA drain is already blocking
+    }
+
+    void wait_drain() override {
+        flush();  // snd_pcm_drain blocks until all samples played
     }
 
     void close() override {
