@@ -596,17 +596,16 @@ static void run_bridge(const Config& cfg) {
     std::condition_variable tx_queue_cv;
     std::vector<std::vector<uint8_t>> tx_queue;
 
-    // TX thread: CSMA/CA + batch all pending frames into one TX burst
-    // Flow: wait for frame → CSMA (check DCD, persistence) →
-    //       collect more frames → PTT ON → preamble → frames → tail → PTT OFF
+    // TX thread: queue-based, transmit after channel clears
+    // Flow: wait for frame → wait DCD clear → wait TXTAIL gap →
+    //       collect ALL pending → PTT ON → preamble → frames → tail → PTT OFF
     std::thread tx_thread([&]() {
         std::vector<int16_t> tx_audio;
         modulator.set_on_sample([&tx_audio](int16_t s) { tx_audio.push_back(s); });
         hdlc_enc.set_on_bit([&modulator](int bit) { modulator.put_bit(bit); });
 
         while (g_running) {
-            // Wait for at least one frame
-            std::vector<std::vector<uint8_t>> batch;
+            // 1. Wait for at least one frame in the queue
             {
                 std::unique_lock<std::mutex> lk(tx_queue_mtx);
                 tx_queue_cv.wait_for(lk, std::chrono::milliseconds(100),
@@ -615,28 +614,17 @@ static void run_bridge(const Config& cfg) {
                 if (tx_queue.empty()) continue;
             }
 
-            // CSMA/CA: wait for channel clear, then apply persistence
+            // 2. Wait for channel to be clear (DCD OFF = remote stopped transmitting)
             if (!kp.fullduplex) {
-                // Wait for DCD to clear (channel not busy)
-                while (g_running && demod.dcd()) {
+                while (g_running && demod.dcd())
                     usleep(10000);  // 10ms poll
-                }
-
-                // Persistence algorithm: random chance to transmit per slot
-                while (g_running) {
-                    int r = rand() & 0xFF;
-                    if (r <= kp.persist) break;  // transmit!
-                    usleep(kp.slottime * 10000); // wait one slottime
-                    // Re-check DCD
-                    if (demod.dcd()) {
-                        // Channel busy again — wait for it to clear
-                        while (g_running && demod.dcd())
-                            usleep(10000);
-                    }
-                }
             }
 
-            // Grab all pending frames (batch)
+            // 3. Post-receive gap: wait TXTAIL for channel to settle
+            usleep(kp.txtail * 10000);
+
+            // 4. Collect ALL pending frames from queue
+            std::vector<std::vector<uint8_t>> batch;
             {
                 std::unique_lock<std::mutex> lk(tx_queue_mtx);
                 while (!tx_queue.empty()) {
@@ -646,7 +634,7 @@ static void run_bridge(const Config& cfg) {
             }
             if (batch.empty()) continue;
 
-            // Modulate all frames into one audio burst
+            // 5. Modulate all frames into one audio burst
             int flags = kp.txdelay * cfg.baud / (8 * 100);
             if (flags < 5) flags = 5;
 
@@ -679,12 +667,7 @@ static void run_bridge(const Config& cfg) {
                 audio->flush();
                 audio->wait_drain();
                 ptt_ctl.set(false);
-                if (cfg.debug) fprintf(stderr, "  [TX] done, PTT OFF, cooldown %dms\n",
-                                       kp.txdelay * 10);
-
-                // TX cooldown: wait TXDELAY before next burst
-                // Gives the remote side time to process and respond
-                usleep(kp.txdelay * 10000);
+                if (cfg.debug) fprintf(stderr, "  [TX] done, PTT OFF\n");
             }
         }
     });
