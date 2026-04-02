@@ -38,7 +38,7 @@
 //   -k T3_MS        T3 keep-alive timer ms (default: 60000)
 //   -n N2           Max retry count (default: 10)
 //   --mtu BYTES     I-frame MTU bytes (default: 128)
-//   --txdelay MS    KISS TX delay ms (default: 400)
+//   --txdelay N     KISS TX delay ×10ms units (default: 40 = 400ms)
 //   --pid HEX       PID for UI frames in hex (default: F0)
 //   -s FILE         Run BASIC script after connect (connect mode only)
 //                   Pre-set vars: remote$, local$, callsign$
@@ -57,7 +57,7 @@
 //   T1 <ms>         Set T1 retransmit timer
 //   T3 <ms>         Set T3 keep-alive timer
 //   MTU <bytes>     Set MTU
-//   TXDELAY <ms>    Set KISS TX delay
+//   TXDELAY <N>     Set KISS TX delay (×10ms units)
 //   SCRIPT <file>   Run BASIC script (only when connected)
 //   HELP            Show command help
 //   QUIT            Exit
@@ -168,7 +168,7 @@ struct AppCfg {
     bool        kiss_tnc = false;         // --tnc: send KISS ON/RESTART/INTERFACE KISS/RESET
     bool        monitor  = false;         // extra monitor in connect/unproto
     uint8_t     pid      = 0xF0;          // UI frame PID
-    int         txdelay  = 400;           // KISS TX delay ms
+    int         txdelay  = 40;            // KISS TX delay (×10ms units, 40=400ms)
     Config      ax25;                     // ax25lib Config (mycall, mtu, etc.)
     int         baud     = 9600;
     std::string script;                   // BASIC script name/path/pattern (-s); empty = interactive
@@ -236,7 +236,7 @@ static void print_usage(const char* prog) {
         << "  -k T3        T3 keep-alive timer ms (default: 60000)\n"
         << "  -n N2        Max retry count (default: 10)\n"
         << "  --mtu N      I-frame MTU bytes (default: 128)\n"
-        << "  --txdelay N  KISS TX delay ms (default: 400)\n"
+        << "  --txdelay N  KISS TX delay ×10ms (default: 40 = 400ms)\n"
         << "  --tnc        Send KISS ON/RESTART/INTERFACE KISS/RESET before KISS (for legacy TNCs)\n"
         << "  --pid HEX    PID for UI frames (default: F0)\n"
         << "  -s FILE      BASIC script to run after connect (connect mode only)\n"
@@ -1086,10 +1086,12 @@ static bool parse_tnc_command(
     // ── TXDELAY ──────────────────────────────────────────────────────────────
     if (cmd_match(verb, "TXDELAY")) {
         if (rest.empty()) {
-            std::cout << "TX delay: " << cfg.txdelay << " ms\n" << std::flush;
+            std::cout << "TX delay: " << cfg.txdelay << " (×10ms = "
+                      << cfg.txdelay * 10 << "ms)\n" << std::flush;
         } else {
             cfg.txdelay = std::atoi(rest.c_str());
-            std::cout << DIM() << "[TX delay set to " << cfg.txdelay << " ms]"
+            std::cout << DIM() << "[TX delay set to " << cfg.txdelay
+                      << " (×10ms = " << cfg.txdelay * 10 << "ms)]"
                       << RESET() << "\n" << std::flush;
         }
         return false;
@@ -1126,7 +1128,7 @@ static bool parse_tnc_command(
                   << "  T1 <ms>          Set T1 retransmit timer\n"
                   << "  T3 <ms>          Set T3 keep-alive timer\n"
                   << "  MTU <bytes>      Set I-frame MTU\n"
-                  << "  TXDELAY <ms>     Set KISS TX delay\n"
+                  << "  TXDELAY <N>      Set KISS TX delay (×10ms units)\n"
                   << "  SCRIPT <file>    Run BASIC script (connected only)\n"
                   << "  HELP             This help\n"
                   << "  QUIT             Exit\n"
@@ -1630,7 +1632,7 @@ int main(int argc, char* argv[]) {
             if (cfg.kiss_tnc) tnc_kiss_init(kiss.fd());
         }
     }
-    kiss.set_txdelay(cfg.txdelay);  // cfg.txdelay is already in ms, set_txdelay expects ms
+    kiss.set_txdelay(cfg.txdelay * 10);  // cfg.txdelay is ×10ms units, set_txdelay expects ms
     kiss.set_persistence(cfg.ax25.persist);
 
     // ── Create Router ────────────────────────────────────────────────────────

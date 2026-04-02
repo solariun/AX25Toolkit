@@ -232,9 +232,9 @@ int main(int argc, char* argv[]) {
         }
         std::this_thread::sleep_for(std::chrono::seconds(2));
         // KISS parameter frames
-        kiss.set_txdelay(400);
-        kiss.set_persistence(63);
-        kiss.set_slottime(100);
+        kiss.set_txdelay(400);     // 400ms → KISS value 40
+        kiss.set_persistence(63);  // 63/255 ≈ 25%
+        kiss.set_slottime(100);    // 100ms → KISS value 10
     }
 
     Addr src = Addr::make(mycall);
