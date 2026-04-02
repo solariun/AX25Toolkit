@@ -426,6 +426,11 @@ static void run_test_tx(const Config& cfg) {
     }
     audio->flush();
 
+    // Wait for audio to finish playing
+    int dur_ms = (int)(1000L * (long)tx_audio.size() / cfg.sample_rate);
+    printf("  Waiting %d ms for audio to play...\n", dur_ms);
+    usleep((unsigned)(dur_ms + 50) * 1000);
+
     printf("  PTT OFF\n");
     ptt_ctl.set(false);
 
@@ -649,6 +654,9 @@ static void run_bridge(const Config& cfg) {
                                 else break;
                             }
                             audio->flush();
+                            // Wait for audio to finish playing before releasing PTT
+                            int duration_ms = (int)(1000L * (long)tx_audio.size() / cfg.sample_rate);
+                            usleep((unsigned)(duration_ms + 50) * 1000);
                             ptt_ctl.set(false);  // Release transmitter
                         }
                     }
@@ -695,6 +703,8 @@ static void run_bridge(const Config& cfg) {
                                 else break;
                             }
                             audio->flush();
+                            int dur_ms = (int)(1000L * (long)tx_audio.size() / cfg.sample_rate);
+                            usleep((unsigned)(dur_ms + 50) * 1000);
                             ptt_ctl.set(false);
                         }
                     }
