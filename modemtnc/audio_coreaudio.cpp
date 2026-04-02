@@ -1,17 +1,18 @@
-// CoreAudio backend for macOS using AudioUnit (AUHAL)
+// CoreAudio backend for macOS — hybrid AudioQueue (capture) + AudioUnit (output)
 //
-// Uses the Audio Unit Hardware Abstraction Layer for reliable full-duplex
-// audio on USB devices (Digirig, etc.). AudioQueue had issues where only
-// the first output burst would play on USB audio devices.
+// Lessons learned:
+//   - AudioQueue handles sample rate conversion for USB devices (44100↔48000)
+//   - AudioUnit AUHAL gives reliable output on USB devices
+//   - AudioQueue output only plays the first burst on USB (broken for TNC use)
+//   - Lock-free ring buffer is essential — mutex in audio callback drops samples
+//   - USB devices report 48000/32-bit but AudioQueue converts to 44100/16-bit
+//   - Output must use HW native rate (AudioUnit doesn't convert on USB)
+//   - TX samples must be resampled if modem rate ≠ output HW rate
 //
-// Architecture (same as PortAudio/Direwolf):
-//   - One AUHAL AudioUnit for both input and output
-//   - Input render callback → RX ring buffer
-//   - Output render callback → reads from TX ring buffer (silence when empty)
-//   - write() fills the TX ring buffer
-//   - wait_drain() sleeps for calculated audio duration
-//
-// License: MIT (PortAudio-inspired, original code)
+// Architecture:
+//   Capture:  AudioQueue → lock-free ring buffer → read()
+//   Output:   write() → TX ring buffer → AudioUnit render callback → speaker
+//   Drain:    usleep for audio duration (Direwolf approach)
 #ifdef __APPLE__
 #include "audio.h"
 
@@ -24,12 +25,12 @@
 #include <cmath>
 #include <vector>
 #include <atomic>
-#include <mutex>
-#include <condition_variable>
 #include <unistd.h>
 
-static constexpr int RX_RING_SIZE = 65536;  // ~1.5s at 44100 Hz
-static constexpr int TX_RING_SIZE = 131072; // ~3s at 44100 Hz — holds a full TX burst
+static constexpr int RX_RING = 65536;   // ~1.5s at 44100
+static constexpr int TX_RING = 131072;  // ~3s — holds full TX burst
+static constexpr int AQ_BUFS = 4;       // AudioQueue capture buffers
+static constexpr int AQ_FRAMES = 1024;  // frames per capture buffer
 
 class CoreAudioDevice : public AudioDevice {
 public:
@@ -37,7 +38,7 @@ public:
 
     // ── Device lookup ────────────────────────────────────────────────────
 
-    AudioDeviceID find_device(const char* device) {
+    static AudioDeviceID find_device(const char* device) {
         if (!device || !device[0]) return 0;
 
         AudioObjectPropertyAddress prop = {
@@ -50,80 +51,89 @@ public:
         if (size == 0) return 0;
 
         int count = (int)(size / sizeof(AudioDeviceID));
-        AudioDeviceID* devices = new AudioDeviceID[count];
-        AudioObjectGetPropertyData(kAudioObjectSystemObject, &prop, 0, nullptr, &size, devices);
+        AudioDeviceID* devs = new AudioDeviceID[count];
+        AudioObjectGetPropertyData(kAudioObjectSystemObject, &prop, 0, nullptr, &size, devs);
 
         char* endp = nullptr;
         long idx = strtol(device, &endp, 10);
-        bool is_index = (endp && *endp == '\0' && idx >= 0);
+        bool is_idx = (endp && *endp == '\0' && idx >= 0);
 
         AudioDeviceID found = 0;
-        int visible = 0;
+        int vis = 0;
         for (int i = 0; i < count; i++) {
-            bool has_ch = false;
-            for (int scope = 0; scope < 2; scope++) {
+            bool has = false;
+            for (int s = 0; s < 2; s++) {
                 AudioObjectPropertyAddress cp = {
                     kAudioDevicePropertyStreamConfiguration,
-                    scope == 0 ? kAudioDevicePropertyScopeInput : kAudioDevicePropertyScopeOutput,
+                    s == 0 ? kAudioDevicePropertyScopeInput : kAudioDevicePropertyScopeOutput,
                     kAudioObjectPropertyElementMain
                 };
                 UInt32 sz = 0;
-                if (AudioObjectGetPropertyDataSize(devices[i], &cp, 0, nullptr, &sz) == noErr && sz > 0) {
+                if (AudioObjectGetPropertyDataSize(devs[i], &cp, 0, nullptr, &sz) == noErr && sz > 0) {
                     AudioBufferList* b = (AudioBufferList*)malloc(sz);
-                    if (AudioObjectGetPropertyData(devices[i], &cp, 0, nullptr, &sz, b) == noErr)
+                    if (AudioObjectGetPropertyData(devs[i], &cp, 0, nullptr, &sz, b) == noErr)
                         for (UInt32 j = 0; j < b->mNumberBuffers; j++)
-                            if (b->mBuffers[j].mNumberChannels > 0) has_ch = true;
+                            if (b->mBuffers[j].mNumberChannels > 0) has = true;
                     free(b);
                 }
             }
-            if (!has_ch) continue;
-
-            if (is_index && visible == (int)idx) { found = devices[i]; break; }
-            if (!is_index) {
-                CFStringRef nameRef = nullptr;
+            if (!has) continue;
+            if (is_idx && vis == (int)idx) { found = devs[i]; break; }
+            if (!is_idx) {
+                CFStringRef nr = nullptr;
                 AudioObjectPropertyAddress np = { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
-                UInt32 ns = sizeof(nameRef);
-                AudioObjectGetPropertyData(devices[i], &np, 0, nullptr, &ns, &nameRef);
-                if (nameRef) {
-                    char name[256];
-                    CFStringGetCString(nameRef, name, sizeof(name), kCFStringEncodingUTF8);
-                    CFRelease(nameRef);
-                    if (strstr(name, device)) { found = devices[i]; break; }
+                UInt32 ns = sizeof(nr);
+                AudioObjectGetPropertyData(devs[i], &np, 0, nullptr, &ns, &nr);
+                if (nr) {
+                    char n[256];
+                    CFStringGetCString(nr, n, sizeof(n), kCFStringEncodingUTF8);
+                    CFRelease(nr);
+                    if (strstr(n, device)) { found = devs[i]; break; }
                 }
             }
-            visible++;
+            vis++;
         }
-        delete[] devices;
+        delete[] devs;
         return found;
+    }
+
+    static bool set_aq_device(AudioQueueRef q, AudioDeviceID d) {
+        if (d == 0) return true;
+        CFStringRef uid = nullptr;
+        AudioObjectPropertyAddress p = { kAudioDevicePropertyDeviceUID, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+        UInt32 s = sizeof(uid);
+        if (AudioObjectGetPropertyData(d, &p, 0, nullptr, &s, &uid) != noErr || !uid) return false;
+        OSStatus e = AudioQueueSetProperty(q, kAudioQueueProperty_CurrentDevice, &uid, sizeof(uid));
+        CFRelease(uid);
+        return e == noErr;
+    }
+
+    static void print_device_name(AudioDeviceID d) {
+        if (d == 0) return;
+        CFStringRef nr = nullptr;
+        AudioObjectPropertyAddress np = { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+        UInt32 ns = sizeof(nr);
+        AudioObjectGetPropertyData(d, &np, 0, nullptr, &ns, &nr);
+        if (nr) {
+            char n[256];
+            CFStringGetCString(nr, n, sizeof(n), kCFStringEncodingUTF8);
+            CFRelease(nr);
+            fprintf(stderr, "  Audio device: %s\n", n);
+        }
     }
 
     // ── Open ─────────────────────────────────────────────────────────────
 
     bool open(const char* device, int sample_rate, bool capture, bool playback) override {
         sample_rate_ = sample_rate;
-        has_capture_ = capture;
-        has_playback_ = playback;
-
-        AudioDeviceID devId = find_device(device);
-        if (device && device[0] && devId == 0) {
+        dev_id_ = find_device(device);
+        if (device && device[0] && dev_id_ == 0) {
             fprintf(stderr, "[Audio] Device not found: '%s'\n", device);
             return false;
         }
+        print_device_name(dev_id_);
 
-        if (devId != 0) {
-            CFStringRef nameRef = nullptr;
-            AudioObjectPropertyAddress np = { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
-            UInt32 ns = sizeof(nameRef);
-            AudioObjectGetPropertyData(devId, &np, 0, nullptr, &ns, &nameRef);
-            if (nameRef) {
-                char name[256];
-                CFStringGetCString(nameRef, name, sizeof(name), kCFStringEncodingUTF8);
-                CFRelease(nameRef);
-                fprintf(stderr, "  Audio device: %s\n", name);
-            }
-        }
-
-        // Audio format: 16-bit signed integer, mono
+        // 16-bit signed mono at requested rate
         AudioStreamBasicDescription fmt{};
         fmt.mSampleRate = sample_rate;
         fmt.mFormatID = kAudioFormatLinearPCM;
@@ -134,263 +144,220 @@ public:
         fmt.mFramesPerPacket = 1;
         fmt.mBytesPerPacket = 2;
 
-        // ── Create AUHAL AudioUnit ──
-        AudioComponentDescription desc{};
-        desc.componentType = kAudioUnitType_Output;
-        desc.componentSubType = kAudioUnitSubType_HALOutput;
-        desc.componentManufacturer = kAudioUnitManufacturer_Apple;
-
-        AudioComponent comp = AudioComponentFindNext(nullptr, &desc);
-        if (!comp) { fprintf(stderr, "[Audio] AUHAL component not found\n"); return false; }
-
-        OSStatus err = AudioComponentInstanceNew(comp, &au_);
-        if (err != noErr) { fprintf(stderr, "[Audio] AudioUnit create failed: %d\n", (int)err); return false; }
-
-        // Enable input (capture) — must be done BEFORE setting device
-        UInt32 flag = 1;
+        // ── Capture: AudioQueue (converts USB 48000→44100 automatically) ──
         if (capture) {
-            err = AudioUnitSetProperty(au_, kAudioOutputUnitProperty_EnableIO,
-                                       kAudioUnitScope_Input, 1, &flag, sizeof(flag));
-            if (err != noErr) fprintf(stderr, "[AU] EnableIO input: %d\n", (int)err);
-        }
-
-        // Enable output (playback)
-        if (playback) {
-            flag = 1;
-            err = AudioUnitSetProperty(au_, kAudioOutputUnitProperty_EnableIO,
-                                       kAudioUnitScope_Output, 0, &flag, sizeof(flag));
-            if (err != noErr) fprintf(stderr, "[AU] EnableIO output: %d\n", (int)err);
-        } else {
-            // If no playback, disable output (AUHAL has output enabled by default)
-            flag = 0;
-            AudioUnitSetProperty(au_, kAudioOutputUnitProperty_EnableIO,
-                                 kAudioUnitScope_Output, 0, &flag, sizeof(flag));
-        }
-
-        // Set device
-        if (devId != 0) {
-            err = AudioUnitSetProperty(au_, kAudioOutputUnitProperty_CurrentDevice,
-                                       kAudioUnitScope_Global, 0, &devId, sizeof(devId));
-            if (err != noErr) fprintf(stderr, "[AU] SetDevice: %d\n", (int)err);
-        }
-
-        // Set format on input scope (what we receive from hardware)
-        if (capture) {
-            // First check what format the hardware provides
-            AudioStreamBasicDescription hwFmt{};
-            UInt32 fmtSz = sizeof(hwFmt);
-            AudioUnitGetProperty(au_, kAudioUnitProperty_StreamFormat,
-                                 kAudioUnitScope_Input, 1, &hwFmt, &fmtSz);
-            fprintf(stderr, "  [AU] HW input: rate=%.0f ch=%u bits=%u\n",
-                    hwFmt.mSampleRate, (unsigned)hwFmt.mChannelsPerFrame,
-                    (unsigned)hwFmt.mBitsPerChannel);
-
-            // Use hardware native sample rate — AudioUnit doesn't reliably
-            // convert sample rates on USB devices
-            if (hwFmt.mSampleRate > 0) {
-                sample_rate_ = (int)hwFmt.mSampleRate;
-                fmt.mSampleRate = hwFmt.mSampleRate;
+            OSStatus e = AudioQueueNewInput(&fmt, rx_callback, this, nullptr,
+                                            kCFRunLoopCommonModes, 0, &in_q_);
+            if (e != noErr) { fprintf(stderr, "[Audio] Capture queue failed: %d\n", (int)e); return false; }
+            set_aq_device(in_q_, dev_id_);
+            for (int i = 0; i < AQ_BUFS; i++) {
+                AudioQueueAllocateBuffer(in_q_, AQ_FRAMES * 2, &in_buf_[i]);
+                AudioQueueEnqueueBuffer(in_q_, in_buf_[i], 0, nullptr);
             }
-            fprintf(stderr, "  [AU] Using %d Hz 16-bit mono\n", sample_rate_);
-
-            err = AudioUnitSetProperty(au_, kAudioUnitProperty_StreamFormat,
-                                       kAudioUnitScope_Output, 1, &fmt, sizeof(fmt));
-            if (err != noErr) fprintf(stderr, "[AU] SetFormat input: %d\n", (int)err);
-
-            // Set input callback
-            AURenderCallbackStruct inputCb{};
-            inputCb.inputProc = input_render_cb;
-            inputCb.inputProcRefCon = this;
-            err = AudioUnitSetProperty(au_, kAudioOutputUnitProperty_SetInputCallback,
-                                       kAudioUnitScope_Global, 0, &inputCb, sizeof(inputCb));
-            if (err != noErr) fprintf(stderr, "[AU] SetInputCallback: %d\n", (int)err);
+            AudioQueueStart(in_q_, nullptr);
+            has_rx_ = true;
+            fprintf(stderr, "  Capture: AudioQueue @ %d Hz 16-bit mono\n", sample_rate);
         }
 
-        // Set format on output scope (what we send to hardware)
+        // ── Output: AudioUnit AUHAL (reliable on USB devices) ──
         if (playback) {
-            fmt.mSampleRate = sample_rate_;  // same as what modem generates
-            err = AudioUnitSetProperty(au_, kAudioUnitProperty_StreamFormat,
-                                       kAudioUnitScope_Input, 0, &fmt, sizeof(fmt));
-            if (err != noErr) fprintf(stderr, "[AU] SetFormat output: %d\n", (int)err);
+            AudioComponentDescription desc{};
+            desc.componentType = kAudioUnitType_Output;
+            desc.componentSubType = kAudioUnitSubType_HALOutput;
+            desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+            AudioComponent comp = AudioComponentFindNext(nullptr, &desc);
+            if (!comp) { fprintf(stderr, "[Audio] AUHAL not found\n"); return false; }
 
-            // Set output render callback
-            AURenderCallbackStruct outputCb{};
-            outputCb.inputProc = output_render_cb;
-            outputCb.inputProcRefCon = this;
-            err = AudioUnitSetProperty(au_, kAudioUnitProperty_SetRenderCallback,
-                                       kAudioUnitScope_Input, 0, &outputCb, sizeof(outputCb));
-            if (err != noErr) fprintf(stderr, "[AU] SetRenderCallback: %d\n", (int)err);
-        }
+            OSStatus e = AudioComponentInstanceNew(comp, &au_);
+            if (e != noErr) { fprintf(stderr, "[Audio] AU create: %d\n", (int)e); return false; }
 
-        // Initialize and start
-        err = AudioUnitInitialize(au_);
-        if (err != noErr) {
-            fprintf(stderr, "[Audio] AudioUnit init failed: %d\n", (int)err);
-            AudioComponentInstanceDispose(au_); au_ = nullptr;
-            return false;
-        }
+            // Output only — no input on this unit
+            UInt32 v = 0;
+            AudioUnitSetProperty(au_, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &v, sizeof(v));
+            v = 1;
+            AudioUnitSetProperty(au_, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &v, sizeof(v));
 
-        err = AudioOutputUnitStart(au_);
-        if (err != noErr) {
-            fprintf(stderr, "[Audio] AudioUnit start failed: %d\n", (int)err);
-            AudioUnitUninitialize(au_);
-            AudioComponentInstanceDispose(au_); au_ = nullptr;
-            return false;
+            if (dev_id_)
+                AudioUnitSetProperty(au_, kAudioOutputUnitProperty_CurrentDevice,
+                                     kAudioUnitScope_Global, 0, &dev_id_, sizeof(dev_id_));
+
+            // Match HW output rate (AudioUnit doesn't convert on USB)
+            AudioStreamBasicDescription hw{};
+            UInt32 hs = sizeof(hw);
+            AudioUnitGetProperty(au_, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &hw, &hs);
+            out_rate_ = (hw.mSampleRate > 0) ? (int)hw.mSampleRate : sample_rate;
+
+            AudioStreamBasicDescription ofmt = fmt;
+            ofmt.mSampleRate = out_rate_;
+            AudioUnitSetProperty(au_, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &ofmt, sizeof(ofmt));
+
+            // Render callback
+            AURenderCallbackStruct cb{};
+            cb.inputProc = tx_callback;
+            cb.inputProcRefCon = this;
+            AudioUnitSetProperty(au_, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof(cb));
+
+            AudioUnitInitialize(au_);
+            AudioOutputUnitStart(au_);
+            has_tx_ = true;
+            fprintf(stderr, "  Output: AudioUnit @ %d Hz 16-bit mono\n", out_rate_);
         }
 
         return true;
     }
 
-    // ── RX: read from ring buffer ────────────────────────────────────────
+    // ── RX ───────────────────────────────────────────────────────────────
 
     int read(int16_t* buf, int frames) override {
-        if (!has_capture_) return 0;
-        // Spin until data available (lock-free)
-        int rd, wr, avail;
+        if (!has_rx_) return 0;
         for (;;) {
-            rd = rx_rd_.load(std::memory_order_relaxed);
-            wr = rx_wr_.load(std::memory_order_acquire);
-            avail = (wr - rd + RX_RING_SIZE) % RX_RING_SIZE;
-            if (avail > 0 || !has_capture_) break;
-            usleep(500);  // 0.5ms — minimal sleep, don't starve CPU
+            int rd = rx_rd_.load(std::memory_order_relaxed);
+            int wr = rx_wr_.load(std::memory_order_acquire);
+            int avail = (wr - rd + RX_RING) % RX_RING;
+            if (avail > 0) {
+                int n = (frames < avail) ? frames : avail;
+                for (int i = 0; i < n; i++)
+                    buf[i] = rx_ring_[(rd + i) % RX_RING];
+                rx_rd_.store((rd + n) % RX_RING, std::memory_order_release);
+                return n;
+            }
+            if (!has_rx_) return 0;
+            usleep(500);
         }
-        if (!has_capture_) return 0;
-        int n = std::min(frames, avail);
-        for (int i = 0; i < n; i++) {
-            buf[i] = rx_ring_[(rd + i) % RX_RING_SIZE];
-        }
-        rx_rd_.store((rd + n) % RX_RING_SIZE, std::memory_order_release);
-        return n;
     }
 
-    // ── TX: write to ring buffer ─────────────────────────────────────────
+    // ── TX: accumulate at modem rate, resample to output rate in drain ───
 
     int write(const int16_t* buf, int frames) override {
-        if (!has_playback_) return 0;
-        std::lock_guard<std::mutex> lk(tx_mtx_);
-        int n = frames;
-        for (int i = 0; i < n; i++) {
-            tx_ring_[tx_wr_] = buf[i];
-            tx_wr_ = (tx_wr_ + 1) % TX_RING_SIZE;
-            if (tx_avail_ < TX_RING_SIZE) tx_avail_++;
-        }
-        return n;
+        if (!has_tx_) return 0;
+        for (int i = 0; i < frames; i++)
+            tx_pcm_.push_back(buf[i]);
+        return frames;
     }
 
     void flush() override {}
 
-    // ── TX: wait for audio to play ───────────────────────────────────────
-    // Like Direwolf: sleep for calculated audio duration.
-    // The output render callback reads from tx_ring_ at audio sample rate.
-
     void wait_drain() override {
-        if (!has_playback_) return;
-        int avail;
+        if (tx_pcm_.empty() || !has_tx_) return;
+
+        // Resample if modem rate ≠ output HW rate
+        std::vector<int16_t>* src = &tx_pcm_;
+        std::vector<int16_t> resampled;
+        if (out_rate_ != sample_rate_ && sample_rate_ > 0) {
+            double ratio = (double)out_rate_ / sample_rate_;
+            int out_len = (int)(tx_pcm_.size() * ratio) + 1;
+            resampled.resize(out_len);
+            for (int i = 0; i < out_len; i++) {
+                double pos = i / ratio;
+                int idx = (int)pos;
+                if (idx >= (int)tx_pcm_.size() - 1) idx = (int)tx_pcm_.size() - 2;
+                if (idx < 0) idx = 0;
+                double frac = pos - idx;
+                resampled[i] = (int16_t)(tx_pcm_[idx] * (1.0 - frac) + tx_pcm_[idx + 1] * frac);
+            }
+            src = &resampled;
+        }
+
+        // Write to TX ring buffer (output callback will read from it)
         {
             std::lock_guard<std::mutex> lk(tx_mtx_);
-            avail = tx_avail_;
+            for (size_t i = 0; i < src->size(); i++) {
+                tx_ring_[tx_wr_] = (*src)[i];
+                tx_wr_ = (tx_wr_ + 1) % TX_RING;
+                if (tx_avail_ < TX_RING) tx_avail_++;
+            }
         }
-        if (avail <= 0) return;
-        int duration_ms = (int)(1000L * (long)avail / sample_rate_);
-        usleep((unsigned)(duration_ms + 50) * 1000);  // audio duration + 50ms margin
+
+        // Sleep for audio duration (Direwolf approach — don't trust AQ/AU drain)
+        int duration_ms = (int)(1000L * (long)src->size() / out_rate_);
+        usleep((unsigned)(duration_ms + 50) * 1000);
+
+        tx_pcm_.clear();
     }
 
     // ── Close ────────────────────────────────────────────────────────────
 
     void close() override {
+        if (in_q_) {
+            AudioQueueStop(in_q_, true);
+            AudioQueueDispose(in_q_, true);
+            in_q_ = nullptr;
+        }
+        has_rx_ = false;
+
         if (au_) {
             AudioOutputUnitStop(au_);
             AudioUnitUninitialize(au_);
             AudioComponentInstanceDispose(au_);
             au_ = nullptr;
         }
-        has_capture_ = false;
-        has_playback_ = false;
+        has_tx_ = false;
     }
 
 private:
-    AudioUnit au_ = nullptr;
-    bool has_capture_ = false;
-    bool has_playback_ = false;
+    AudioDeviceID dev_id_ = 0;
 
-    // ── RX ring buffer (lock-free: audio callback writes, read() reads) ──
-    int16_t rx_ring_[RX_RING_SIZE]{};
+    // ── Capture (AudioQueue) ─────────────────────────────────────────────
+    AudioQueueRef       in_q_ = nullptr;
+    AudioQueueBufferRef in_buf_[AQ_BUFS]{};
+    bool has_rx_ = false;
+
+    int16_t rx_ring_[RX_RING]{};
     std::atomic<int> rx_wr_{0};
     std::atomic<int> rx_rd_{0};
 
-    // ── TX ring buffer ───────────────────────────────────────────────────
-    int16_t tx_ring_[TX_RING_SIZE]{};
-    int     tx_wr_ = 0, tx_rd_ = 0;
-    std::atomic<int> tx_avail_{0};
+    // ── Output (AudioUnit) ───────────────────────────────────────────────
+    AudioUnit au_ = nullptr;
+    bool has_tx_ = false;
+    int  out_rate_ = 44100;
+
+    // TX: modem writes here, drain resamples + copies to tx_ring_
+    std::vector<int16_t> tx_pcm_;
+
+    // TX ring buffer for AudioUnit output callback
+    int16_t tx_ring_[TX_RING]{};
+    int     tx_wr_ = 0, tx_rd_ = 0, tx_avail_ = 0;
     std::mutex tx_mtx_;
 
-    // ── Input render callback (runs on audio thread) ─────────────────────
-    static OSStatus input_render_cb(void* ctx,
-                                    AudioUnitRenderActionFlags* ioActionFlags,
-                                    const AudioTimeStamp* inTimeStamp,
-                                    UInt32 inBusNumber,
-                                    UInt32 inNumberFrames,
-                                    AudioBufferList* /*ioData*/) {
+    // ── Callbacks ────────────────────────────────────────────────────────
+
+    // AudioQueue capture callback (lock-free write to RX ring)
+    static void rx_callback(void* ctx, AudioQueueRef, AudioQueueBufferRef buf,
+                            const AudioTimeStamp*, UInt32, const AudioStreamPacketDescription*) {
         auto* self = static_cast<CoreAudioDevice*>(ctx);
+        int frames = (int)(buf->mAudioDataByteSize / 2);
+        auto* samples = static_cast<int16_t*>(buf->mAudioData);
 
-        // Allocate buffer to receive input data
-        int16_t tmp[4096];
-        AudioBufferList bufList;
-        bufList.mNumberBuffers = 1;
-        bufList.mBuffers[0].mNumberChannels = 1;
-        bufList.mBuffers[0].mDataByteSize = inNumberFrames * 2;
-        bufList.mBuffers[0].mData = tmp;
-
-        OSStatus err = AudioUnitRender(self->au_, ioActionFlags, inTimeStamp,
-                                       inBusNumber, inNumberFrames, &bufList);
-        if (err != noErr) return err;
-
-        // Log first callback and count
-        static int cb_count = 0;
-        cb_count++;
-        if (cb_count <= 3 || (cb_count % 1000 == 0)) {
-            fprintf(stderr, "  [AU] input cb #%d: %u frames, %u bytes, err=%d\n",
-                    cb_count, (unsigned)inNumberFrames,
-                    (unsigned)bufList.mBuffers[0].mDataByteSize, (int)err);
-        }
-
-        // Copy to RX ring buffer (lock-free)
         int wr = self->rx_wr_.load(std::memory_order_relaxed);
         int rd = self->rx_rd_.load(std::memory_order_acquire);
-        for (UInt32 i = 0; i < inNumberFrames; i++) {
-            int next = (wr + 1) % RX_RING_SIZE;
-            if (next == rd) break;
-            self->rx_ring_[wr] = tmp[i];
+        for (int i = 0; i < frames; i++) {
+            int next = (wr + 1) % RX_RING;
+            if (next == rd) break;  // full
+            self->rx_ring_[wr] = samples[i];
             wr = next;
         }
         self->rx_wr_.store(wr, std::memory_order_release);
-        return noErr;
+
+        AudioQueueEnqueueBuffer(self->in_q_, buf, 0, nullptr);
     }
 
-    // ── Output render callback (runs on audio thread) ────────────────────
-    // Fills output buffer from TX ring buffer. Outputs silence when empty.
-    static OSStatus output_render_cb(void* ctx,
-                                     AudioUnitRenderActionFlags* /*ioActionFlags*/,
-                                     const AudioTimeStamp* /*inTimeStamp*/,
-                                     UInt32 /*inBusNumber*/,
-                                     UInt32 inNumberFrames,
-                                     AudioBufferList* ioData) {
+    // AudioUnit output render callback (reads from TX ring)
+    static OSStatus tx_callback(void* ctx, AudioUnitRenderActionFlags*,
+                                const AudioTimeStamp*, UInt32, UInt32 frames,
+                                AudioBufferList* ioData) {
         auto* self = static_cast<CoreAudioDevice*>(ctx);
         int16_t* out = static_cast<int16_t*>(ioData->mBuffers[0].mData);
-        int frames = (int)inNumberFrames;
+        int n = (int)frames;
 
-        // Read from TX ring buffer (lock-free read with atomic avail)
-        int avail = self->tx_avail_.load();
-        int to_read = std::min(frames, avail);
-
+        std::lock_guard<std::mutex> lk(self->tx_mtx_);
+        int to_read = (n < self->tx_avail_) ? n : self->tx_avail_;
         for (int i = 0; i < to_read; i++) {
             out[i] = self->tx_ring_[self->tx_rd_];
-            self->tx_rd_ = (self->tx_rd_ + 1) % TX_RING_SIZE;
+            self->tx_rd_ = (self->tx_rd_ + 1) % TX_RING;
         }
         self->tx_avail_ -= to_read;
-
-        // Fill remaining with silence
-        for (int i = to_read; i < frames; i++)
+        // Silence for remaining
+        for (int i = to_read; i < n; i++)
             out[i] = 0;
 
         return noErr;
@@ -405,63 +372,59 @@ AudioDevice* AudioDevice::create() {
 
 int AudioDevice::list_devices() {
     AudioObjectPropertyAddress prop = {
-        kAudioHardwarePropertyDevices,
-        kAudioObjectPropertyScopeGlobal,
-        kAudioObjectPropertyElementMain
+        kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
     };
     UInt32 size = 0;
-    OSStatus err = AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &prop, 0, nullptr, &size);
-    if (err != noErr || size == 0) { printf("No audio devices found.\n"); return 0; }
+    AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &prop, 0, nullptr, &size);
+    if (size == 0) { printf("No audio devices found.\n"); return 0; }
 
     int count = (int)(size / sizeof(AudioDeviceID));
-    auto* devices = new AudioDeviceID[count];
-    AudioObjectGetPropertyData(kAudioObjectSystemObject, &prop, 0, nullptr, &size, devices);
+    auto* devs = new AudioDeviceID[count];
+    AudioObjectGetPropertyData(kAudioObjectSystemObject, &prop, 0, nullptr, &size, devs);
 
     printf("%-4s  %-40s  %-5s  %-5s  %s\n", "#", "Device Name", "IN", "OUT", "UID");
     printf("%-4s  %-40s  %-5s  %-5s  %s\n", "---", "----------------------------------------", "-----", "-----", "---");
 
     int listed = 0;
     for (int i = 0; i < count; i++) {
-        CFStringRef nameRef = nullptr;
-        AudioObjectPropertyAddress nameProp = { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
-        UInt32 nameSize = sizeof(nameRef);
-        AudioObjectGetPropertyData(devices[i], &nameProp, 0, nullptr, &nameSize, &nameRef);
+        CFStringRef nr = nullptr;
+        AudioObjectPropertyAddress np = { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+        UInt32 ns = sizeof(nr);
+        AudioObjectGetPropertyData(devs[i], &np, 0, nullptr, &ns, &nr);
         char name[256] = "(unknown)";
-        if (nameRef) { CFStringGetCString(nameRef, name, sizeof(name), kCFStringEncodingUTF8); CFRelease(nameRef); }
+        if (nr) { CFStringGetCString(nr, name, sizeof(name), kCFStringEncodingUTF8); CFRelease(nr); }
 
-        CFStringRef uidRef = nullptr;
-        AudioObjectPropertyAddress uidProp = { kAudioDevicePropertyDeviceUID, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
-        UInt32 uidSize = sizeof(uidRef);
-        AudioObjectGetPropertyData(devices[i], &uidProp, 0, nullptr, &uidSize, &uidRef);
+        CFStringRef ur = nullptr;
+        AudioObjectPropertyAddress up = { kAudioDevicePropertyDeviceUID, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+        UInt32 us = sizeof(ur);
+        AudioObjectGetPropertyData(devs[i], &up, 0, nullptr, &us, &ur);
         char uid[256] = "";
-        if (uidRef) { CFStringGetCString(uidRef, uid, sizeof(uid), kCFStringEncodingUTF8); CFRelease(uidRef); }
+        if (ur) { CFStringGetCString(ur, uid, sizeof(uid), kCFStringEncodingUTF8); CFRelease(ur); }
 
-        bool has_input = false, has_output = false;
-        for (int scope = 0; scope < 2; scope++) {
+        bool has_in = false, has_out = false;
+        for (int s = 0; s < 2; s++) {
             AudioObjectPropertyAddress cp = {
                 kAudioDevicePropertyStreamConfiguration,
-                scope == 0 ? kAudioDevicePropertyScopeInput : kAudioDevicePropertyScopeOutput,
+                s == 0 ? kAudioDevicePropertyScopeInput : kAudioDevicePropertyScopeOutput,
                 kAudioObjectPropertyElementMain
             };
             UInt32 sz = 0;
-            if (AudioObjectGetPropertyDataSize(devices[i], &cp, 0, nullptr, &sz) == noErr && sz > 0) {
+            if (AudioObjectGetPropertyDataSize(devs[i], &cp, 0, nullptr, &sz) == noErr && sz > 0) {
                 AudioBufferList* b = (AudioBufferList*)malloc(sz);
-                if (AudioObjectGetPropertyData(devices[i], &cp, 0, nullptr, &sz, b) == noErr)
+                if (AudioObjectGetPropertyData(devs[i], &cp, 0, nullptr, &sz, b) == noErr)
                     for (UInt32 j = 0; j < b->mNumberBuffers; j++)
                         if (b->mBuffers[j].mNumberChannels > 0)
-                            (scope == 0 ? has_input : has_output) = true;
+                            (s == 0 ? has_in : has_out) = true;
                 free(b);
             }
         }
-        if (!has_input && !has_output) continue;
-
+        if (!has_in && !has_out) continue;
         printf("%-4d  %-40s  %-5s  %-5s  %s\n", listed, name,
-               has_input ? "yes" : "-", has_output ? "yes" : "-", uid);
+               has_in ? "yes" : "-", has_out ? "yes" : "-", uid);
         listed++;
     }
-    delete[] devices;
+    delete[] devs;
     printf("\nFound %d audio device(s).\n", listed);
-    printf("\nUsage:  modemtnc -d \"<Device Name>\" ...\n");
     return listed;
 }
 

@@ -172,8 +172,8 @@ void Demodulator::init_afsk(int baud, int mark, int space) {
     pll_locked_inertia_ = 0.74f;
     pll_searching_inertia_ = 0.50f;
 
-    // Use Profile B (FM discriminator) — more robust for FM signals with de-emphasis
-    afsk_.use_profile_b = true;
+    // Profile A (mark/space amplitude) — proven to decode long frames
+    afsk_.use_profile_b = false;
 
     // Profile A: Mark/Space local oscillators (kept for reference)
     afsk_.m_osc_phase = 0;
