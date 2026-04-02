@@ -641,8 +641,10 @@ static void run_bridge(const Config& cfg) {
             if (batch.empty()) continue;
 
             // ── Step 5: modulate into one audio burst ──
-            int preamble_flags = kp.txdelay * cfg.baud / (8 * 100);
-            if (preamble_flags < 5) preamble_flags = 5;
+            // KISS command overrides modemtnc default; if KISS sends 0, use modemtnc default
+            int td = (kp.txdelay > 0) ? kp.txdelay : cfg.txdelay;
+            int preamble_flags = td * cfg.baud / (8 * 100);
+            if (preamble_flags < 15) preamble_flags = 15;  // safety minimum ~100ms @ 1200
 
             tx_audio.clear();
             for (size_t i = 0; i < batch.size(); i++) {
