@@ -591,84 +591,82 @@ static void run_bridge(const Config& cfg) {
     kp.slottime = cfg.slottime;
     kp.txtail   = cfg.txtail;
 
-    // TX queue: frames from PTY/TCP → TX thread
+    // ── TX queue + thread ──────────────────────────────────────────────────
+    // KISS-compliant TNC behavior: deterministic, queue-based, no randomization
+    //
+    // Flow: frame arrives → queue → DCD wait → TXTAIL gap →
+    //       batch all pending → PTT ON → preamble → frames → tail → PTT OFF
+    //
     std::mutex tx_queue_mtx;
     std::condition_variable tx_queue_cv;
     std::vector<std::vector<uint8_t>> tx_queue;
 
-    // TX thread: queue-based, transmit after channel clears
-    // Flow: wait for frame → wait DCD clear → wait TXTAIL gap →
-    //       collect ALL pending → PTT ON → preamble → frames → tail → PTT OFF
     std::thread tx_thread([&]() {
         std::vector<int16_t> tx_audio;
         modulator.set_on_sample([&tx_audio](int16_t s) { tx_audio.push_back(s); });
         hdlc_enc.set_on_bit([&modulator](int bit) { modulator.put_bit(bit); });
 
         while (g_running) {
-            // 1. Wait for at least one frame in the queue
+            // ── Step 1: wait for at least one frame ──
             {
                 std::unique_lock<std::mutex> lk(tx_queue_mtx);
-                tx_queue_cv.wait_for(lk, std::chrono::milliseconds(100),
-                    [&] { return !tx_queue.empty() || !g_running; });
+                tx_queue_cv.wait(lk, [&] { return !tx_queue.empty() || !g_running; });
                 if (!g_running) break;
-                if (tx_queue.empty()) continue;
             }
 
-            // 2. Wait for channel to be clear (DCD OFF = remote stopped transmitting)
-            if (!kp.fullduplex) {
+            // ── Step 2: wait for channel clear (DCD OFF) ──
+            if (!kp.fullduplex && demod.dcd()) {
+                if (cfg.debug) fprintf(stderr, "  [DCD] waiting...\n");
                 while (g_running && demod.dcd())
-                    usleep(10000);  // 10ms poll
+                    usleep(5000);  // 5ms poll
+                if (cfg.debug) fprintf(stderr, "  [DCD] clear\n");
             }
 
-            // 3. Post-receive gap: wait TXTAIL for channel to settle
+            // ── Step 3: post-receive gap (TXTAIL) ──
             usleep(kp.txtail * 10000);
 
-            // 4. Collect ALL pending frames from queue
+            // ── Step 4: collect ALL pending frames ──
             std::vector<std::vector<uint8_t>> batch;
             {
-                std::unique_lock<std::mutex> lk(tx_queue_mtx);
-                while (!tx_queue.empty()) {
-                    batch.push_back(std::move(tx_queue.front()));
-                    tx_queue.erase(tx_queue.begin());
-                }
+                std::lock_guard<std::mutex> lk(tx_queue_mtx);
+                batch.swap(tx_queue);  // grab everything, O(1)
             }
             if (batch.empty()) continue;
 
-            // 5. Modulate all frames into one audio burst
-            int flags = kp.txdelay * cfg.baud / (8 * 100);
-            if (flags < 5) flags = 5;
+            // ── Step 5: modulate into one audio burst ──
+            int preamble_flags = kp.txdelay * cfg.baud / (8 * 100);
+            if (preamble_flags < 5) preamble_flags = 5;
 
             tx_audio.clear();
             for (size_t i = 0; i < batch.size(); i++) {
-                if (i == 0) {
-                    // First frame: full preamble
-                    hdlc_enc.send_frame(batch[i].data(), batch[i].size(), flags, 2);
-                } else {
-                    // Subsequent frames: short inter-frame gap (3 flags)
-                    hdlc_enc.send_frame(batch[i].data(), batch[i].size(), 3, 2);
-                }
+                int flags = (i == 0) ? preamble_flags : 3; // first=full preamble, rest=short gap
+                hdlc_enc.send_frame(batch[i].data(), batch[i].size(), flags, 2);
             }
             modulator.put_quiet_ms(kp.txtail * 10);
 
-            if (!tx_audio.empty()) {
-                if (cfg.debug)
-                    fprintf(stderr, "  [TX] %zu frame(s), %zu samples (%.0f ms), PTT ON\n",
-                            batch.size(), tx_audio.size(),
-                            1000.0 * tx_audio.size() / cfg.sample_rate);
+            if (tx_audio.empty()) continue;
 
-                ptt_ctl.set(true);
-                size_t off = 0;
-                while (off < tx_audio.size()) {
-                    int chunk = std::min((int)(tx_audio.size() - off), 1024);
-                    int written = audio->write(tx_audio.data() + off, chunk);
-                    if (written > 0) off += written;
-                    else break;
-                }
-                audio->flush();
-                audio->wait_drain();
-                ptt_ctl.set(false);
-                if (cfg.debug) fprintf(stderr, "  [TX] done, PTT OFF\n");
+            if (cfg.debug)
+                fprintf(stderr, "  [TX] burst: %zu frame(s), %zu samples (%.0f ms)\n",
+                        batch.size(), tx_audio.size(),
+                        1000.0 * tx_audio.size() / cfg.sample_rate);
+
+            // ── Step 6: PTT ON → write audio → drain → PTT OFF ──
+            ptt_ctl.set(true);
+            if (cfg.debug) fprintf(stderr, "  [TX] PTT ON\n");
+
+            size_t off = 0;
+            while (off < tx_audio.size()) {
+                int chunk = std::min((int)(tx_audio.size() - off), 1024);
+                int written = audio->write(tx_audio.data() + off, chunk);
+                if (written > 0) off += written;
+                else break;
             }
+            audio->flush();
+            audio->wait_drain();
+
+            ptt_ctl.set(false);
+            if (cfg.debug) fprintf(stderr, "  [TX] PTT OFF\n");
         }
     });
 
@@ -692,7 +690,7 @@ static void run_bridge(const Config& cfg) {
         if (tcp_srv >= 0) { FD_SET(tcp_srv, &rfds); if (tcp_srv > maxfd) maxfd = tcp_srv; }
         for (int fd : tcp_clients) { FD_SET(fd, &rfds); if (fd > maxfd) maxfd = fd; }
 
-        struct timeval tv = {0, 50000}; // 50ms
+        struct timeval tv = {0, 10000}; // 10ms — fast response for KISS frames
         int ret = select(maxfd + 1, &rfds, nullptr, nullptr, &tv);
         if (ret < 0) { if (errno == EINTR) continue; break; }
 
@@ -720,16 +718,17 @@ static void run_bridge(const Config& cfg) {
                 auto frames = kiss_dec.feed(buf, n);
                 for (auto& kf : frames) {
                     if (kf.command == ax25::kiss::Cmd::Data && kf.data.size() > 0) {
-                        // Data frame → enqueue for TX thread
                         if (cfg.monitor) show_frame(kf.data.data(), kf.data.size(), "-> AIR");
+                        size_t depth;
                         {
                             std::lock_guard<std::mutex> lk(tx_queue_mtx);
                             tx_queue.push_back(kf.data);
-                            if (cfg.debug)
-                                fprintf(stderr, "  [QUEUE] enqueued %zu bytes, depth=%zu\n",
-                                        kf.data.size(), tx_queue.size());
+                            depth = tx_queue.size();
                         }
                         tx_queue_cv.notify_one();
+                        if (cfg.debug)
+                            fprintf(stderr, "  [QUEUE] +1 frame (%zu bytes), depth=%zu\n",
+                                    kf.data.size(), depth);
                     }
                     // Handle KISS parameter commands
                     else if (kf.command == ax25::kiss::Cmd::TxDelay && kf.data.size() >= 1)

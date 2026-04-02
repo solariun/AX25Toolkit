@@ -239,9 +239,13 @@ public:
 
     void wait_drain() override {
         if (!output_queue_ || !has_playback_) return;
-        // Wait until all TX buffers have been played
+        // Wait until all TX buffers have been played (with 5s safety timeout)
         std::unique_lock<std::mutex> lk(tx_mtx_);
-        tx_cv_.wait(lk, [this] { return tx_pending_ <= 0 || !has_playback_; });
+        bool ok = tx_cv_.wait_for(lk, std::chrono::seconds(5),
+            [this] { return tx_pending_ <= 0 || !has_playback_; });
+        if (!ok)
+            fprintf(stderr, "  [Audio] WARNING: wait_drain timeout (pending=%d)\n", tx_pending_);
+        tx_pending_ = 0;  // reset in case of timeout
         // Re-enqueue free buffers as silence to keep pipeline warm
         tx_want_bufs_ = false;
         while (tx_free_count_ > 0) {
