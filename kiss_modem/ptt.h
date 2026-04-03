@@ -1,7 +1,7 @@
-// PTT (Push-To-Talk) control for modemtnc
+// PTT (Push-To-Talk) control for kiss_modem
 // Supports: VOX, Serial RTS/DTR, CM108/CM119 USB GPIO, GPIO (sysfs), CAT (hamlib)
 // PTT methods derived from Dire Wolf by John Langner, WB2OSZ (GPLv2)
-// Simplified for modemtnc: C++11 classes, single channel
+// Simplified for kiss_modem: C++11 classes, single channel
 #pragma once
 #include <cstdint>
 #include <string>

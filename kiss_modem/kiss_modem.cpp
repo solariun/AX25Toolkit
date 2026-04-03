@@ -1,12 +1,12 @@
-// modemtnc — Software TNC with Soundcard DSP
+// kiss_modem — Software TNC with Soundcard DSP
 // Demodulates/modulates AX.25 via soundcard, exposes KISS interface (PTY + TCP)
 // DSP derived from Dire Wolf by John Langner, WB2OSZ (GPLv2)
 // https://github.com/wb2osz/direwolf
 //
 // Usage:
-//   modemtnc -c W1AW -s 1200 -d default --link /tmp/kiss --monitor
-//   modemtnc -s 9600 --server-port 8001 --monitor
-//   modemtnc --loopback --monitor   (self-test: modulate → demodulate)
+//   kiss_modem -c W1AW -s 1200 -d default --link /tmp/kiss --monitor
+//   kiss_modem -s 9600 --server-port 8001 --monitor
+//   kiss_modem --loopback --monitor   (self-test: modulate → demodulate)
 
 #include <cstdio>
 #include <cstdlib>
@@ -156,10 +156,10 @@ static modem::Type baud_to_type(int baud) {
 // ---------------------------------------------------------------------------
 static void usage() {
     printf(
-        "modemtnc — Software TNC with Soundcard DSP\n"
+        "kiss_modem — Software TNC with Soundcard DSP\n"
         "DSP derived from Dire Wolf by John Langner, WB2OSZ (GPLv2)\n"
         "\n"
-        "Usage: modemtnc [options]\n"
+        "Usage: kiss_modem [options]\n"
         "\n"
         "Audio:\n"
         "  -d DEVICE         Audio device:\n"
@@ -216,18 +216,18 @@ static void usage() {
         "  --loopback        Self-test: TX -> RX in memory (no audio device)\n"
         "  --test-ptt        Toggle PTT 3 times (1s on, 1s off) and exit\n"
         "  --test-tx TEXT    Send one UI frame (CALL>CQ TEXT) via audio and exit\n"
-        "                      e.g. --test-tx \"Hello from modemtnc\"\n"
+        "                      e.g. --test-tx \"Hello from kiss_modem\"\n"
         "  --debug           Verbose debug output (PTY hex, queue, TX timing)\n"
         "  -h, --help        Show this help\n"
         "\n"
         "Examples:\n"
-        "  modemtnc --list-devices                           # find audio devices\n"
-        "  modemtnc --loopback --monitor                     # self-test\n"
-        "  modemtnc --ptt cm108 -d plughw:1,0 --monitor     # Digirig\n"
-        "  modemtnc --ptt rts --ptt-device /dev/ttyUSB0 -d plughw:1,0 --monitor\n"
-        "  modemtnc --ptt icom --ptt-device /dev/ttyUSB0 -d plughw:2,0 --monitor\n"
-        "  modemtnc --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 --monitor\n"
-        "  modemtnc --ptt cat --cat-tx-on FEFE94E01C0001FD --cat-tx-off FEFE94E01C0000FD ...\n"
+        "  kiss_modem --list-devices                           # find audio devices\n"
+        "  kiss_modem --loopback --monitor                     # self-test\n"
+        "  kiss_modem --ptt cm108 -d plughw:1,0 --monitor     # Digirig\n"
+        "  kiss_modem --ptt rts --ptt-device /dev/ttyUSB0 -d plughw:1,0 --monitor\n"
+        "  kiss_modem --ptt icom --ptt-device /dev/ttyUSB0 -d plughw:2,0 --monitor\n"
+        "  kiss_modem --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 --monitor\n"
+        "  kiss_modem --ptt cat --cat-tx-on FEFE94E01C0001FD --cat-tx-off FEFE94E01C0000FD ...\n"
         "\n"
         "Connect a KISS client:\n"
         "  ax25tnc -c W1AW -r W1BBS /tmp/kiss\n"
@@ -447,7 +447,7 @@ static void run_test_tx(const Config& cfg) {
 //  Loopback self-test
 // ---------------------------------------------------------------------------
 static void run_loopback(const Config& cfg) {
-    printf("=== modemtnc loopback self-test ===\n");
+    printf("=== kiss_modem loopback self-test ===\n");
     printf("Modem: %d baud, sample rate: %d\n\n", cfg.baud, cfg.sample_rate);
 
     modem::Modulator mod;
@@ -485,7 +485,7 @@ static void run_loopback(const Config& cfg) {
     f.src  = ax25::Addr::make(cfg.callsign.empty() ? "TEST" : cfg.callsign.c_str());
     f.ctrl = 0x03;  // UI
     f.pid  = 0xF0;
-    const char* msg = "modemtnc loopback test 1234567890";
+    const char* msg = "kiss_modem loopback test 1234567890";
     f.info.assign(msg, msg + strlen(msg));
     auto raw = f.encode();
 
@@ -537,7 +537,7 @@ static void run_bridge(const Config& cfg) {
     }
 
     printf("====================================================================\n");
-    printf("  modemtnc — Software TNC with Soundcard DSP\n");
+    printf("  kiss_modem — Software TNC with Soundcard DSP\n");
     printf("====================================================================\n");
     printf("  Modem      : %d baud\n", cfg.baud);
     printf("  Audio      : %s @ %d Hz\n",
@@ -641,7 +641,7 @@ static void run_bridge(const Config& cfg) {
             if (batch.empty()) continue;
 
             // ── Step 5: modulate into one audio burst ──
-            // KISS command overrides modemtnc default; if KISS sends 0, use modemtnc default
+            // KISS command overrides kiss_modem default; if KISS sends 0, use kiss_modem default
             int td = (kp.txdelay > 0) ? kp.txdelay : cfg.txdelay;
             int preamble_flags = td * cfg.baud / (8 * 100);
             if (preamble_flags < 15) preamble_flags = 15;  // safety minimum ~100ms @ 1200

@@ -25,11 +25,11 @@ make deps
 make          # builds all tools
 make test     # runs the GoogleTest suite (194 tests)
 
-# 4. Verify modemtnc DSP (no hardware needed)
-./bin/modemtnc --loopback --monitor
+# 4. Verify kiss_modem DSP (no hardware needed)
+./bin/kiss_modem --loopback --monitor
 
 # 5. List available audio devices
-./bin/modemtnc --list-devices
+./bin/kiss_modem --list-devices
 
 # 6. List nearby Bluetooth radios
 ./bin/bt_kiss_bridge --scan --ble
@@ -45,7 +45,7 @@ make test     # runs the GoogleTest suite (194 tests)
 | `ax25kiss` | Lightweight standalone KISS terminal (single file, no lib) |
 | `ax25send` | Fire-and-forget APRS position/message and UI frame sender |
 | `bt_kiss_bridge` | Bluetooth KISS bridge — BLE + Classic BT to PTY/TCP |
-| `modemtnc` | Software TNC — soundcard DSP (AFSK 1200/300, GMSK 9600) |
+| `kiss_modem` | Software TNC — soundcard DSP (AFSK 1200/300, GMSK 9600) |
 | `bt_sniffer` | Transparent KISS proxy tap for traffic analysis |
 | `ax25sim` | PTY-based TNC simulator for hardware-free development |
 | `basic_tool` | Offline BASIC REPL and script debugger |
@@ -343,7 +343,7 @@ radio station.
 | `ax25sim` | PTY-based TNC simulator for hardware-free development and testing |
 | `basic_tool` | Offline BASIC REPL and script debugger for BBS script development |
 | `ax25send` | Fire-and-forget APRS position/message and UI frame sender |
-| `modemtnc` | Software TNC — soundcard DSP replaces hardware TNC (AFSK 1200/300, GMSK 9600) |
+| `kiss_modem` | Software TNC — soundcard DSP replaces hardware TNC (AFSK 1200/300, GMSK 9600) |
 
 - **`bt_kiss_bridge`** — Use inexpensive Bluetooth radios (BLE or Classic BT) as
   packet modems.  No expensive dedicated TNC hardware required; a handheld radio
@@ -494,7 +494,7 @@ bt_kiss_bridge ──► PTY /tmp/kiss ──► ax25tnc   (interactive terminal
                                  └──► bbs        (multi-user BBS server)
                └──► TCP :8001   ──► ax25tnc -c W1AW localhost:8001
 
-modemtnc       ──► PTY /tmp/kiss ──► (same clients as above)
+kiss_modem       ──► PTY /tmp/kiss ──► (same clients as above)
                                       software TNC: soundcard DSP (no hardware TNC)
 
 bt_sniffer  ──  transparent tap between bridge and client (observe only)
@@ -535,7 +535,7 @@ Full reference: [§19 bt_kiss_bridge](#19-bt_kiss_bridge--bluetooth-kiss-bridge-
 
 ---
 
-### `modemtnc` — Software TNC (Soundcard DSP)
+### `kiss_modem` — Software TNC (Soundcard DSP)
 
 Replaces a hardware TNC by performing AX.25 HDLC and modem DSP in software
 using the computer's soundcard.  Supports AFSK 1200 (VHF), AFSK 300 (HF),
@@ -544,28 +544,28 @@ ALSA (Linux).  DSP derived from Dire Wolf.
 
 ```bash
 # Self-test (no audio hardware needed)
-./bin/modemtnc --loopback --monitor
+./bin/kiss_modem --loopback --monitor
 
 # List audio devices
-./bin/modemtnc --list-devices
+./bin/kiss_modem --list-devices
 
 # Digirig (CM108 PTT auto-detected)
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
 
 # IC-7300 / FT-991A (serial RTS PTT)
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
 
 # HF 300 baud (SSB)
-./bin/modemtnc -d plughw:1,0 -s 300 --ptt rts --ptt-device /dev/ttyUSB0 --txdelay 500 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 300 --ptt rts --ptt-device /dev/ttyUSB0 --txdelay 500 --link /tmp/kiss --monitor
 
 # 9600 baud (auto 96 kHz sample rate)
-./bin/modemtnc -d plughw:1,0 -s 9600 --ptt cm108 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 9600 --ptt cm108 --link /tmp/kiss --monitor
 
 # VOX (default — no --ptt flag)
-./bin/modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
 
 # Test TX: send a UI frame
-./bin/ax25send -c YOURCALL /tmp/kiss --ui CQ "Hello from modemtnc"
+./bin/ax25send -c YOURCALL /tmp/kiss --ui CQ "Hello from kiss_modem"
 ```
 
 **PTT control** — without PTT the radio will not transmit. Choose the method
@@ -585,7 +585,7 @@ that matches your setup:
 Compatible with any audio interface: SignaLink USB, Digirig, DRAWS, DINAH,
 DMK URI, built-in soundcard, or SDR via audio pipe.
 
-Full reference: [modemtnc/README.md](modemtnc/README.md)
+Full reference: [kiss_modem/README.md](kiss_modem/README.md)
 
 ---
 

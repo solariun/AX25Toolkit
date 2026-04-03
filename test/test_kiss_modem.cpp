@@ -1,4 +1,4 @@
-// GoogleTest suite for modemtnc — HDLC framing + modem loopback
+// GoogleTest suite for kiss_modem — HDLC framing + modem loopback
 // Tests the complete TX → RX chain without audio hardware
 #include <gtest/gtest.h>
 #include <vector>

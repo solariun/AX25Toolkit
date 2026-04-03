@@ -169,7 +169,7 @@ int AudioDevice::list_devices() {
     }
 
     printf("\nFound %d ALSA device(s).\n", listed);
-    printf("\nUsage:  modemtnc -d \"<ALSA Device>\" ...\n");
+    printf("\nUsage:  kiss_modem -d \"<ALSA Device>\" ...\n");
     printf("  Common choices:\n");
     printf("    -d default          System default (usually works)\n");
     printf("    -d plughw:1,0       USB sound card (card 1, device 0) — auto format conversion\n");

@@ -1,7 +1,7 @@
-// PTT (Push-To-Talk) control for modemtnc
+// PTT (Push-To-Talk) control for kiss_modem
 // Serial RTS/DTR and CM108 GPIO derived from Dire Wolf by John Langner, WB2OSZ (GPLv2)
 // Original: https://github.com/wb2osz/direwolf
-// Simplified for modemtnc: C++11, single channel, no global state
+// Simplified for kiss_modem: C++11, single channel, no global state
 #include "ptt.h"
 #include <cstdio>
 #include <cstring>
@@ -567,7 +567,7 @@ void cm108_list() {
     if (count == 0) {
         printf("  (none found)\n");
     }
-    printf("\nUse: modemtnc --ptt cm108 --ptt-device /dev/hidrawN --ptt-gpio 3\n");
+    printf("\nUse: kiss_modem --ptt cm108 --ptt-device /dev/hidrawN --ptt-gpio 3\n");
     printf("  (GPIO 3 is most common — CMedia pin 13)\n");
 #else
     printf("CM108/CM119 device listing only supported on Linux\n");

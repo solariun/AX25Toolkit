@@ -20,7 +20,7 @@
     - [UML Class Diagram](#uml-class-diagram)
     - [Data Flow Diagram](#data-flow-diagram)
 11. [BLE Transport Implementation Notes](#11-ble-transport-implementation-notes)
-12. [modemtnc — Software TNC DSP Architecture](#12-modemtnc--software-tnc-dsp-architecture)
+12. [kiss_modem — Software TNC DSP Architecture](#12-kiss_modem--software-tnc-dsp-architecture)
     - [System Context](#system-context)
     - [DSP Pipeline](#dsp-pipeline)
     - [AFSK Demodulator](#afsk-demodulator-design)
@@ -765,9 +765,9 @@ in the order and at the timing they arrive from the PTY/TCP client.
 
 ---
 
-## 12. modemtnc — Software TNC DSP Architecture
+## 12. kiss_modem — Software TNC DSP Architecture
 
-modemtnc is a software TNC that replaces a hardware TNC (e.g., a Kantronics KPC-3,
+kiss_modem is a software TNC that replaces a hardware TNC (e.g., a Kantronics KPC-3,
 TNC-Pi, or the TNC built into a Kenwood TH-D75) by performing AX.25 HDLC framing
 and modem DSP entirely in software, using the computer's soundcard as the radio
 interface.  It presents the same KISS interface (PTY + TCP) as `bt_kiss_bridge`,
@@ -793,7 +793,7 @@ simplified to a single-decoder architecture with C++ classes and no global state
                                   └────────┬─────────┘
                                            │ PCM 16-bit mono
                               ┌────────────┴────────────┐
-                              │       modemtnc           │
+                              │       kiss_modem           │
                               │                          │
                               │  AudioDevice (RX/TX)     │
                               │       │          ^       │
@@ -966,7 +966,7 @@ need for a separate synchronization protocol.
 
 **Sample rate requirement**: 9600 baud needs at least 48000 Hz sample rate
 (5 samples/bit).  At 44100 Hz only 4.59 samples/bit — too few for reliable
-PLL lock.  modemtnc auto-selects 96000 Hz for 9600 baud (10 samples/bit),
+PLL lock.  kiss_modem auto-selects 96000 Hz for 9600 baud (10 samples/bit),
 providing comfortable margin.
 
 ### HDLC Framing
@@ -1039,7 +1039,7 @@ parameter controls preamble length (default 300 ms = 45 flags at 1200 baud).
 
 ### Platform Audio Backends
 
-modemtnc uses system audio APIs with zero external dependencies:
+kiss_modem uses system audio APIs with zero external dependencies:
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -1117,17 +1117,17 @@ modemtnc uses system audio APIs with zero external dependencies:
 - Many radios need a hardware mod (discriminator tap) for 9600 baud
 - Radios with built-in 9600 support: Kenwood TM-D710, Yaesu FTM-400, ICom IC-9700
 - The SignaLink USB passes 9600 baud without modification
-- Use 96000 Hz sample rate (modemtnc auto-selects this)
+- Use 96000 Hz sample rate (kiss_modem auto-selects this)
 
 **Relationship to bt_kiss_bridge:**
 
-Both modemtnc and bt_kiss_bridge serve as transport layers that present a
+Both kiss_modem and bt_kiss_bridge serve as transport layers that present a
 KISS interface to the host. They are complementary:
 
-| | modemtnc | bt_kiss_bridge |
+| | kiss_modem | bt_kiss_bridge |
 |---|---------|---------------|
 | **Transport** | Soundcard audio | Bluetooth (BLE/Classic) |
-| **TNC** | Software (DSP in modemtnc) | Hardware (radio's built-in TNC) |
+| **TNC** | Software (DSP in kiss_modem) | Hardware (radio's built-in TNC) |
 | **Radio connection** | Audio cable / sound interface | BLE or BT Classic |
 | **Supported radios** | Any radio + sound interface | BLE/BT TNC radios (GA-5WB, VR-N76, TH-D75) |
 | **CPU usage** | Higher (real-time DSP) | Minimal |

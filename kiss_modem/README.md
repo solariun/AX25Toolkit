@@ -1,4 +1,4 @@
-# modemtnc -- Software TNC with Soundcard DSP
+# kiss_modem -- Software TNC with Soundcard DSP
 
 A self-contained software TNC that replaces a hardware TNC by performing
 AX.25 HDLC framing and modem DSP in software, using the computer's soundcard
@@ -12,13 +12,13 @@ Simplified: single-decoder architecture, C++ classes, no global state.
 
 ```bash
 # Build
-make modemtnc
+make kiss_modem
 
 # Self-test (no audio device needed)
-./bin/modemtnc --loopback --monitor
+./bin/kiss_modem --loopback --monitor
 
 # Run with soundcard
-./bin/modemtnc -s 1200 --link /tmp/kiss --monitor
+./bin/kiss_modem -s 1200 --link /tmp/kiss --monitor
 
 # Connect any KISS client
 ./bin/ax25tnc -c W1AW -r W1BBS /tmp/kiss
@@ -79,10 +79,10 @@ sample rate is automatically raised to 96000 Hz (override with `-r`).
 
 ## Selecting an Audio Device
 
-Before running modemtnc, identify which audio device to use:
+Before running kiss_modem, identify which audio device to use:
 
 ```bash
-./bin/modemtnc --list-devices
+./bin/kiss_modem --list-devices
 ```
 
 ### macOS output example
@@ -115,13 +115,13 @@ Hardware cards:
 For Linux, use the ALSA device name with `-d`:
 ```bash
 # System default (usually works)
-./bin/modemtnc -d default -s 1200 --link /tmp/kiss --monitor
+./bin/kiss_modem -d default -s 1200 --link /tmp/kiss --monitor
 
 # Specific USB sound card (card 1) with auto-conversion
-./bin/modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
 
 # Direct hardware access (card 1) — lowest latency
-./bin/modemtnc -d hw:1,0 -s 1200 --link /tmp/kiss --monitor
+./bin/kiss_modem -d hw:1,0 -s 1200 --link /tmp/kiss --monitor
 ```
 
 ### Which device to choose?
@@ -139,7 +139,7 @@ and compare — the new entry is your device.
 ## Command Line Reference
 
 ```
-modemtnc [options]
+kiss_modem [options]
 
 Audio:
   -d DEVICE         Audio device name
@@ -211,34 +211,34 @@ Testing:
 
 ```bash
 # List audio devices
-modemtnc --list-devices
+kiss_modem --list-devices
 
 # Self-test (no hardware)
-modemtnc --loopback --monitor
+kiss_modem --loopback --monitor
 
 # Standard VHF packet (1200 baud AFSK) with VOX (default)
-modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
+kiss_modem -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
 
 # With Digirig PTT (CM108 GPIO auto-detected)
-modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
+kiss_modem -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
 
 # With serial RTS PTT (IC-7300, FT-991A)
-modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
+kiss_modem -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
 
 # Inverted RTS PTT (active low)
-modemtnc -d plughw:1,0 -s 1200 --ptt -rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
+kiss_modem -d plughw:1,0 -s 1200 --ptt -rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
 
 # HF packet (300 baud AFSK via SSB)
-modemtnc -d plughw:1,0 -s 300 --ptt rts --ptt-device /dev/ttyUSB0 --txdelay 500 --link /tmp/kiss --monitor
+kiss_modem -d plughw:1,0 -s 300 --ptt rts --ptt-device /dev/ttyUSB0 --txdelay 500 --link /tmp/kiss --monitor
 
 # High-speed UHF (9600 baud G3RUH)
-modemtnc -d plughw:1,0 -s 9600 --ptt cm108 --link /tmp/kiss --monitor
+kiss_modem -d plughw:1,0 -s 9600 --ptt cm108 --link /tmp/kiss --monitor
 
 # GPIO PTT on Raspberry Pi (pin 25)
-modemtnc -d plughw:1,0 -s 1200 --ptt gpio --ptt-gpio 25 --link /tmp/kiss --monitor
+kiss_modem -d plughw:1,0 -s 1200 --ptt gpio --ptt-gpio 25 --link /tmp/kiss --monitor
 
 # With TCP server for remote clients
-modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --server-port 8001 --link /tmp/kiss --monitor
+kiss_modem -d plughw:1,0 -s 1200 --ptt cm108 --server-port 8001 --link /tmp/kiss --monitor
 
 # Connect clients to the TNC
 ax25tnc -c W1AW -r W1BBS /tmp/kiss           # interactive terminal
@@ -252,9 +252,9 @@ bbs -c W1BBS /tmp/kiss                        # BBS server
 ### Loopback Self-Test (no hardware)
 
 ```bash
-./bin/modemtnc --loopback --monitor -c TEST           # 1200 baud AFSK
-./bin/modemtnc --loopback --monitor -c TEST -s 300    # 300 baud HF
-./bin/modemtnc --loopback --monitor -c TEST -s 9600   # 9600 baud G3RUH
+./bin/kiss_modem --loopback --monitor -c TEST           # 1200 baud AFSK
+./bin/kiss_modem --loopback --monitor -c TEST -s 300    # 300 baud HF
+./bin/kiss_modem --loopback --monitor -c TEST -s 9600   # 9600 baud G3RUH
 ```
 
 ### Digirig + Any VHF/UHF Radio (1200 baud)
@@ -265,14 +265,14 @@ or data port, and plug USB into the computer.
 
 ```bash
 # 1. Find the audio device
-./bin/modemtnc --list-devices
+./bin/kiss_modem --list-devices
 # Look for "USB Audio CODEC" or "Digirig" — note the ALSA device (e.g., plughw:1,0)
 
 # 2. Run with CM108 PTT (auto-detects /dev/hidrawN)
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
 
 # 3. Or specify the HID device explicitly
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --ptt-device /dev/hidraw0 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt cm108 --ptt-device /dev/hidraw0 --link /tmp/kiss --monitor
 
 # 4. Connect clients
 ./bin/ax25tnc -c YOURCALL -r REMOTE /tmp/kiss              # interactive
@@ -291,27 +291,27 @@ sound card needed — plug the USB cable directly.
 
 ```bash
 # 1. Find audio and serial devices
-./bin/modemtnc --list-devices
+./bin/kiss_modem --list-devices
 # Audio: look for "CODEC" or "IC-7300" (e.g., plughw:2,0 on Linux)
 # Serial: /dev/ttyUSB0 or /dev/cu.usbmodem* (for CAT/PTT)
 
 # 2. HF packet at 300 baud — Option A: serial RTS PTT
-./bin/modemtnc -d plughw:2,0 -s 300 \
+./bin/kiss_modem -d plughw:2,0 -s 300 \
     --ptt rts --ptt-device /dev/ttyUSB0 \
     --txdelay 500 --link /tmp/kiss --monitor
 
 # 2. HF packet at 300 baud — Option B: Icom CI-V CAT PTT (no RTS needed)
-./bin/modemtnc -d plughw:2,0 -s 300 \
+./bin/kiss_modem -d plughw:2,0 -s 300 \
     --ptt icom --ptt-device /dev/ttyUSB0 --cat-rate 19200 \
     --txdelay 500 --link /tmp/kiss --monitor
 
 # 3. CI-V with different address (e.g. IC-9700 = 0xA2)
-./bin/modemtnc -d plughw:2,0 -s 1200 \
+./bin/kiss_modem -d plughw:2,0 -s 1200 \
     --ptt icom --ptt-device /dev/ttyUSB0 --cat-addr 0xA2 \
     --link /tmp/kiss --monitor
 
 # macOS: use cu.* device names
-./bin/modemtnc -d default -s 300 \
+./bin/kiss_modem -d default -s 300 \
     --ptt icom --ptt-device /dev/cu.usbmodem14201 --cat-rate 19200 \
     --txdelay 500 --link /tmp/kiss --monitor
 ```
@@ -322,7 +322,7 @@ sound card needed — plug the USB cable directly.
 - **Menu > Set > Connectors > CI-V Baud Rate**: 19200 (match `--cat-rate`)
 - **Menu > Set > Connectors > CI-V Address**: 94h (default, matches `--cat-addr 0x94`)
 - **Mode**: USB/LSB for 300 baud HF packet (SSB mode, not FM)
-- **Data mode**: DATA OFF (modemtnc handles the modem, not the radio)
+- **Data mode**: DATA OFF (kiss_modem handles the modem, not the radio)
 
 **Icom CI-V addresses** (common radios):
 
@@ -340,32 +340,32 @@ The FT-991A has USB audio and USB serial built-in (similar to IC-7300).
 
 ```bash
 # 1. Find devices
-./bin/modemtnc --list-devices
+./bin/kiss_modem --list-devices
 # Audio: "USB Audio CODEC" (e.g., plughw:1,0)
 # Serial: /dev/ttyUSB0 (CAT) — there are TWO serial ports, use the CAT one
 
 # 2. HF 300 baud — Option A: serial RTS PTT
-./bin/modemtnc -d plughw:1,0 -s 300 \
+./bin/kiss_modem -d plughw:1,0 -s 300 \
     --ptt rts --ptt-device /dev/ttyUSB0 \
     --txdelay 500 --link /tmp/kiss --monitor
 
 # 2. HF 300 baud — Option B: Yaesu CAT PTT (sends "TX1;" / "TX0;")
-./bin/modemtnc -d plughw:1,0 -s 300 \
+./bin/kiss_modem -d plughw:1,0 -s 300 \
     --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 \
     --txdelay 500 --link /tmp/kiss --monitor
 
 # 3. VHF 1200 baud AFSK with CAT PTT
-./bin/modemtnc -d plughw:1,0 -s 1200 \
+./bin/kiss_modem -d plughw:1,0 -s 1200 \
     --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 \
     --link /tmp/kiss --monitor
 
 # 4. UHF 9600 baud (requires flat audio — use DATA connector)
-./bin/modemtnc -d plughw:1,0 -s 9600 \
+./bin/kiss_modem -d plughw:1,0 -s 9600 \
     --ptt yaesu --ptt-device /dev/ttyUSB0 --cat-rate 38400 \
     --link /tmp/kiss --monitor
 
 # macOS
-./bin/modemtnc -d default -s 1200 \
+./bin/kiss_modem -d default -s 1200 \
     --ptt yaesu --ptt-device /dev/cu.usbserial-* --cat-rate 38400 \
     --link /tmp/kiss --monitor
 ```
@@ -373,7 +373,7 @@ The FT-991A has USB audio and USB serial built-in (similar to IC-7300).
 **FT-991A radio settings:**
 - **Menu 037 CAT SELECT**: USB
 - **Menu 038 CAT RATE**: 38400 (must match `--cat-rate`)
-- **Menu 064 DATA MODE**: OTHERS (not PSK/RTTY — modemtnc is the modem)
+- **Menu 064 DATA MODE**: OTHERS (not PSK/RTTY — kiss_modem is the modem)
 - **Menu 065 OTHER DISP (SSB)**: 3000 Hz
 - **Menu 070 DATA OUT LEVEL**: adjust (start at 50)
 - **Menu 071 DATA IN LEVEL**: adjust (start at 50)
@@ -388,12 +388,12 @@ has issues or you want to use the USB port for CAT control only.
 
 ```bash
 # Digirig on audio, radio USB for PTT
-./bin/modemtnc -d plughw:1,0 -s 1200 \
+./bin/kiss_modem -d plughw:1,0 -s 1200 \
     --ptt rts --ptt-device /dev/ttyUSB0 \
     --link /tmp/kiss --monitor
 
 # Or Digirig with its own CM108 PTT (no radio serial needed)
-./bin/modemtnc -d plughw:1,0 -s 1200 \
+./bin/kiss_modem -d plughw:1,0 -s 1200 \
     --ptt cm108 --link /tmp/kiss --monitor
 ```
 
@@ -401,7 +401,7 @@ has issues or you want to use the USB port for CAT control only.
 
 ```bash
 # Expose KISS via TCP for network clients
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --server-port 8001 --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt cm108 --server-port 8001 --monitor
 
 # Connect remotely
 ./bin/ax25tnc -c W1AW -r W1BBS localhost:8001
@@ -413,7 +413,7 @@ If your interface has built-in VOX (some SignaLink USB configurations):
 
 ```bash
 # No --ptt flag needed (defaults to VOX)
-./bin/modemtnc -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --link /tmp/kiss --monitor
 ```
 
 ## Compatible Audio Interfaces
@@ -438,13 +438,13 @@ For receive-only with an RTL-SDR:
 # Terminal 1: RTL-SDR to audio pipe
 rtl_fm -f 144.39M -s 22050 - | sox -t raw -r 22050 -e signed -b 16 -c 1 - -t alsa default
 
-# Terminal 2: modemtnc
-./bin/modemtnc -s 1200 --link /tmp/kiss --monitor
+# Terminal 2: kiss_modem
+./bin/kiss_modem -s 1200 --link /tmp/kiss --monitor
 ```
 
 ## PTT (Push-To-Talk) Control
 
-Without PTT control, the radio will not transmit. modemtnc supports multiple
+Without PTT control, the radio will not transmit. kiss_modem supports multiple
 PTT methods to work with any radio setup:
 
 | Method | Flag | How it works | Common use |
@@ -483,7 +483,7 @@ PTT ─┐                                                                ┌─
 ### CM108/CM119 (Digirig) Setup
 
 The Digirig and many cheap USB audio interfaces use a CM108 or CM119 chip
-that has GPIO pins accessible via HID. modemtnc auto-detects the HID device.
+that has GPIO pins accessible via HID. kiss_modem auto-detects the HID device.
 
 ```bash
 # Check if a CM108/CM119 device is present
@@ -511,11 +511,11 @@ ls /dev/ttyUSB* /dev/ttyACM*
 ls /dev/cu.usbserial* /dev/cu.usbmodem*
 
 # Use RTS for PTT
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --monitor
 
 # If PTT is inverted (active low) — two equivalent ways:
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt -rts --ptt-device /dev/ttyUSB0 --monitor
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --ptt-invert --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt -rts --ptt-device /dev/ttyUSB0 --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --ptt-invert --monitor
 ```
 
 ### Testing PTT — Step by Step
@@ -525,24 +525,24 @@ Follow these steps in order:
 
 **Step 1 — Loopback (no hardware)**
 ```bash
-./bin/modemtnc --loopback --monitor -c TEST
+./bin/kiss_modem --loopback --monitor -c TEST
 # Expected: "Result: PASS" — confirms DSP chain works
 ```
 
 **Step 2 — List devices**
 ```bash
-./bin/modemtnc --list-devices
+./bin/kiss_modem --list-devices
 # Note your audio device (e.g., plughw:1,0) and serial port (e.g., /dev/ttyUSB0)
 ```
 
-**Step 3 — Start modemtnc with PTT and monitor**
+**Step 3 — Start kiss_modem with PTT and monitor**
 ```bash
 # Terminal 1: start the TNC
 # Digirig:
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt cm108 --link /tmp/kiss --monitor
 
 # IC-7300 / FT-991A:
-./bin/modemtnc -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
+./bin/kiss_modem -d plughw:1,0 -s 1200 --ptt rts --ptt-device /dev/ttyUSB0 --link /tmp/kiss --monitor
 ```
 
 You should see:
@@ -572,12 +572,12 @@ And on the radio:
 
 **Step 5 — Send an APRS position**
 ```bash
-./bin/ax25send -c YOURCALL /tmp/kiss --pos 42.3601,-71.0589 "Testing modemtnc"
+./bin/ax25send -c YOURCALL /tmp/kiss --pos 42.3601,-71.0589 "Testing kiss_modem"
 ```
 
 **Step 6 — Monitor for incoming packets**
 ```bash
-# Leave modemtnc running — any packet received on-air will appear:
+# Leave kiss_modem running — any packet received on-air will appear:
 [HH:MM:SS.mmm]  <- AIR  W1AW>CQ [UI] PID=0xF0 | Hello from W1AW
 ```
 
@@ -587,7 +587,7 @@ And on the radio:
 |---------|-------------|-----|
 | No TX LED on radio | PTT not keying | Check `--ptt` method and `--ptt-device` path |
 | TX LED but no signal on SDR | Audio not reaching radio | Check audio device with `--list-devices`, verify cable |
-| TX LED stays on forever | PTT stuck | Ctrl-C modemtnc (releases PTT on exit), check `--ptt-invert` |
+| TX LED stays on forever | PTT stuck | Ctrl-C kiss_modem (releases PTT on exit), check `--ptt-invert` |
 | Permission denied on `/dev/hidraw*` | CM108 HID permissions | Add udev rule (see CM108 section above) |
 | Permission denied on `/dev/ttyUSB*` | Serial port permissions | `sudo usermod -aG dialout $USER` then re-login |
 | PTT keys but wrong polarity | Inverted PTT logic | Use `--ptt -rts` or `--ptt-invert` |
@@ -641,11 +641,11 @@ for the PLL, as specified in the G3RUH modem standard.
 
 ```bash
 # macOS (automatic)
-make modemtnc
+make kiss_modem
 
 # Linux (needs ALSA headers)
 sudo apt install libasound2-dev   # Debian/Ubuntu
-make modemtnc
+make kiss_modem
 
 # Build everything
 make
@@ -661,9 +661,9 @@ HDLC encode -> NRZI -> modulate -> demodulate -> PLL -> NRZI decode -> HDLC deco
 
 ```bash
 # Test all supported baud rates
-./bin/modemtnc --loopback --monitor -c TEST -s 1200
-./bin/modemtnc --loopback --monitor -c TEST -s 300
-./bin/modemtnc --loopback --monitor -c TEST -s 9600
+./bin/kiss_modem --loopback --monitor -c TEST -s 1200
+./bin/kiss_modem --loopback --monitor -c TEST -s 300
+./bin/kiss_modem --loopback --monitor -c TEST -s 9600
 
 # Expected output for each:
 # Result: PASS
@@ -782,7 +782,7 @@ PLL clock recovery, AGC, HDLC framing) are derived from
 **[Dire Wolf](https://github.com/wb2osz/direwolf)** by John Langner, WB2OSZ,
 licensed under GPLv2.
 
-The modemtnc implementation simplifies the original:
+The kiss_modem implementation simplifies the original:
 - Single decoder (vs. 9 parallel slicers)
 - C++ classes with no global state (vs. C with static arrays)
 - Single audio channel (vs. 6 channels across 3 soundcards)

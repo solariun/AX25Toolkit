@@ -88,7 +88,7 @@ INSTALLDIR = $(PREFIX)/bin
 
 .PHONY: all clean test install uninstall install-deps help
 
-all: bbs ax25kiss ax25tnc ax25sim ax25send basic_tool bt_kiss_bridge bt_sniffer modemtnc
+all: bbs ax25kiss ax25tnc ax25sim ax25send basic_tool bt_kiss_bridge bt_sniffer kiss_modem
 
 # ── Build directories ───────────────────────────────────────────────────────
 $(BUILDDIR) $(BINDIR):
@@ -134,8 +134,8 @@ basic_tool: $(BINDIR)/basic_tool
 bt_kiss_bridge: $(BINDIR)/bt_kiss_bridge
 ble_kiss_bridge: $(BINDIR)/ble_kiss_bridge
 bt_sniffer: $(BINDIR)/bt_sniffer
-modemtnc: $(BINDIR)/modemtnc
-.PHONY: bbs ax25kiss ax25tnc ax25sim ax25send basic_tool bt_kiss_bridge ble_kiss_bridge bt_sniffer modemtnc
+kiss_modem: $(BINDIR)/kiss_modem
+.PHONY: bbs ax25kiss ax25tnc ax25sim ax25send basic_tool bt_kiss_bridge ble_kiss_bridge bt_sniffer kiss_modem
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 $(BINDIR)/test_ax25lib: $(TESTDIR)/test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) | $(BINDIR)
@@ -143,14 +143,14 @@ $(BINDIR)/test_ax25lib: $(TESTDIR)/test_ax25lib.cpp $(LIB_OBJ) $(BASIC_OBJ) | $(
 	    -o $@ $< $(LIB_OBJ) $(BASIC_OBJ) \
 	    $(GTEST_LDFLAGS) $(SQLITE_LIBS)
 
-$(BINDIR)/test_modemtnc: $(TESTDIR)/test_modemtnc.cpp $(BUILDDIR)/modem_dsp.o $(BUILDDIR)/modem_hdlc.o $(LIB_OBJ) | $(BINDIR)
-	$(CXX) -std=c++17 -Ilib -Imodemtnc $(GTEST_CFLAGS) \
+$(BINDIR)/test_kiss_modem: $(TESTDIR)/test_kiss_modem.cpp $(BUILDDIR)/modem_dsp.o $(BUILDDIR)/modem_hdlc.o $(LIB_OBJ) | $(BINDIR)
+	$(CXX) -std=c++17 -Ilib -Ikiss_modem $(GTEST_CFLAGS) \
 	    -o $@ $< $(BUILDDIR)/modem_dsp.o $(BUILDDIR)/modem_hdlc.o $(LIB_OBJ) \
 	    $(GTEST_LDFLAGS)
 
-test: $(BINDIR)/test_ax25lib $(BINDIR)/test_modemtnc
+test: $(BINDIR)/test_ax25lib $(BINDIR)/test_kiss_modem
 	$(BINDIR)/test_ax25lib --gtest_color=yes
-	$(BINDIR)/test_modemtnc --gtest_color=yes
+	$(BINDIR)/test_kiss_modem --gtest_color=yes
 
 # ── Native BLE object compilation ──────────────────────────────────────────
 $(BUILDDIR)/bt_ble_linux.o: $(LIBDIR)/bt_ble_linux.cpp $(LIBDIR)/bt_ble_native.h | $(BUILDDIR)
@@ -173,9 +173,9 @@ $(BINDIR)/ble_kiss_bridge: $(BINDIR)/bt_kiss_bridge
 	ln -sf bt_kiss_bridge $(BINDIR)/ble_kiss_bridge
 	@echo "Created symlink: bin/ble_kiss_bridge -> bt_kiss_bridge"
 
-# ── modemtnc — Software TNC with Soundcard DSP ────────────────────────────
-MODEM_DIR  = modemtnc
-MODEM_OBJS = $(BUILDDIR)/modemtnc.o $(BUILDDIR)/modem_dsp.o \
+# ── kiss_modem — Software TNC with Soundcard DSP ────────────────────────────
+MODEM_DIR  = kiss_modem
+MODEM_OBJS = $(BUILDDIR)/kiss_modem.o $(BUILDDIR)/modem_dsp.o \
              $(BUILDDIR)/modem_hdlc.o $(BUILDDIR)/modem_audio.o \
              $(BUILDDIR)/modem_ptt.o
 
@@ -187,7 +187,7 @@ else
     MODEM_AUDIO_LIBS = -lasound -lpthread
 endif
 
-$(BUILDDIR)/modemtnc.o: $(MODEM_DIR)/modemtnc.cpp $(MODEM_DIR)/modem.h $(MODEM_DIR)/hdlc.h $(MODEM_DIR)/audio.h | $(BUILDDIR)
+$(BUILDDIR)/kiss_modem.o: $(MODEM_DIR)/kiss_modem.cpp $(MODEM_DIR)/modem.h $(MODEM_DIR)/hdlc.h $(MODEM_DIR)/audio.h | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -I$(MODEM_DIR) -c -o $@ $<
 
 $(BUILDDIR)/modem_dsp.o: $(MODEM_DIR)/modem.cpp $(MODEM_DIR)/modem.h | $(BUILDDIR)
@@ -202,9 +202,9 @@ $(BUILDDIR)/modem_audio.o: $(MODEM_AUDIO_SRC) $(MODEM_DIR)/audio.h | $(BUILDDIR)
 $(BUILDDIR)/modem_ptt.o: $(MODEM_DIR)/ptt.cpp $(MODEM_DIR)/ptt.h | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -I$(MODEM_DIR) -c -o $@ $<
 
-$(BINDIR)/modemtnc: $(MODEM_OBJS) $(LIB_OBJ) | $(BINDIR)
+$(BINDIR)/kiss_modem: $(MODEM_OBJS) $(LIB_OBJ) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $(MODEM_OBJS) $(LIB_OBJ) $(LDUTIL) $(MODEM_AUDIO_LIBS)
-	@echo "Built: bin/modemtnc"
+	@echo "Built: bin/kiss_modem"
 
 # ── Clean ───────────────────────────────────────────────────────────────────
 clean:
@@ -225,7 +225,7 @@ install:
 	install -m 755 $(BINDIR)/basic_tool     $(INSTALLDIR)/basic_tool
 	install -m 755 $(BINDIR)/bt_kiss_bridge $(INSTALLDIR)/bt_kiss_bridge
 	install -m 755 $(BINDIR)/bt_sniffer     $(INSTALLDIR)/bt_sniffer
-	install -m 755 $(BINDIR)/modemtnc      $(INSTALLDIR)/modemtnc
+	install -m 755 $(BINDIR)/kiss_modem      $(INSTALLDIR)/kiss_modem
 	ln -sf bt_kiss_bridge $(INSTALLDIR)/ble_kiss_bridge
 	@echo "Installing config and scripts to ~/.ax25toolkit ..."
 	@mkdir -p $(HOME)/.ax25toolkit/scripts
@@ -245,7 +245,7 @@ uninstall:
 	      $(INSTALLDIR)/basic_tool \
 	      $(INSTALLDIR)/bt_kiss_bridge \
 	      $(INSTALLDIR)/bt_sniffer \
-	      $(INSTALLDIR)/modemtnc \
+	      $(INSTALLDIR)/kiss_modem \
 	      $(INSTALLDIR)/ble_kiss_bridge
 	@echo "Done."
 
@@ -337,7 +337,7 @@ deps-linux:
 	@echo ""
 	@echo "=== Linux deps installed ==="
 	@echo "  Compiler    : g++ / clang++ (C++17)"
-	@echo "  Audio       : ALSA (libasound2) — for modemtnc"
+	@echo "  Audio       : ALSA (libasound2) — for kiss_modem"
 	@echo "  Bluetooth   : D-Bus (BLE) + BlueZ (Classic BT) — for bt_kiss_bridge"
 	@echo "  Database    : SQLite3 — for bbs"
 	@echo "  Testing     : GoogleTest — for make test"
@@ -355,7 +355,7 @@ help:
 	@echo "  basic_tool     Standalone BASIC script runner"
 	@echo "  bt_kiss_bridge BLE/Classic BT KISS bridge"
 	@echo "  bt_sniffer     KISS proxy tap for bridge debugging"
-	@echo "  modemtnc       Software TNC with soundcard DSP"
+	@echo "  kiss_modem       Software TNC with soundcard DSP"
 	@echo "  test           Build and run test suite"
 	@echo "  clean          Remove build/ and bin/"
 	@echo "  install        Install to $(PREFIX)/bin + ~/.ax25toolkit"

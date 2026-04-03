@@ -54,19 +54,19 @@ jobs:
       - name: Build core apps
         run: make bbs ax25kiss ax25tnc ax25sim ax25send
 
-      # ── Build modemtnc ────────────────────────────────────────────────────
-      - name: Build modemtnc
-        run: make modemtnc
+      # ── Build kiss_modem ────────────────────────────────────────────────────
+      - name: Build kiss_modem
+        run: make kiss_modem
 
       # ── Modemtnc loopback self-test ────────────────────────────────────────
-      - name: modemtnc loopback (1200 baud)
-        run: ./bin/modemtnc --loopback -s 1200 -c CI | grep -q "PASS"
+      - name: kiss_modem loopback (1200 baud)
+        run: ./bin/kiss_modem --loopback -s 1200 -c CI | grep -q "PASS"
 
-      - name: modemtnc loopback (300 baud)
-        run: ./bin/modemtnc --loopback -s 300 -c CI | grep -q "PASS"
+      - name: kiss_modem loopback (300 baud)
+        run: ./bin/kiss_modem --loopback -s 300 -c CI | grep -q "PASS"
 
-      - name: modemtnc loopback (9600 baud)
-        run: ./bin/modemtnc --loopback -s 9600 -c CI | grep -q "PASS"
+      - name: kiss_modem loopback (9600 baud)
+        run: ./bin/kiss_modem --loopback -s 9600 -c CI | grep -q "PASS"
 
       # ── Test suite ─────────────────────────────────────────────────────────
       - name: Run tests

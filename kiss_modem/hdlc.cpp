@@ -1,7 +1,7 @@
 // HDLC framing for AX.25: bit stuffing, FCS/CRC16-CCITT, frame assembly
 // FCS table and algorithm derived from Dire Wolf by John Langner, WB2OSZ (GPLv2)
 // Original: https://github.com/wb2osz/direwolf
-// Simplified for modemtnc: single-channel, C++ classes, no global state
+// Simplified for kiss_modem: single-channel, C++ classes, no global state
 #include "hdlc.h"
 #include <cstring>
 

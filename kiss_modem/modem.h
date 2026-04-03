@@ -1,7 +1,7 @@
 // Modem demodulator — AFSK 1200/300, GMSK 9600, PSK 2400/4800
 // DSP algorithms derived from Dire Wolf by John Langner, WB2OSZ (GPLv2)
 // Original: https://github.com/wb2osz/direwolf
-// Simplified for modemtnc: single-decoder, C++ classes, no global state
+// Simplified for kiss_modem: single-decoder, C++ classes, no global state
 #pragma once
 #include <cstdint>
 #include <functional>
