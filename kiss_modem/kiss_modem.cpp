@@ -643,6 +643,8 @@ static void run_bridge(const Config& cfg) {
     std::deque<std::vector<uint8_t>> tx_queue;
 
     std::thread tx_thread([&]() {
+        srand((unsigned)time(nullptr));  // seed CSMA p-persistence RNG
+
         std::vector<int16_t> tx_audio;
         modulator.set_on_sample([&tx_audio](int16_t s) { tx_audio.push_back(s); });
         hdlc_enc.set_on_bit([&modulator](int bit) { modulator.put_bit(bit); });
@@ -657,18 +659,44 @@ static void run_bridge(const Config& cfg) {
                 if (!g_running) break;
             }
 
-            // ── DCD_WAIT: hold until channel clear ──
+            // ── CSMA/CA: p-persistence carrier sense (Dire Wolf algorithm) ──
+            // 1. Wait for DCD clear
+            // 2. 20ms squelch tail settle
+            // 3. P-persistence: each slottime, transmit with prob persist/256
+            //    If DCD returns during wait, restart from step 1
             if (!kp.fullduplex) {
+            csma_restart:
                 if (cfg.debug_level >= 2 && demod.dcd())
                     fprintf(stderr, "[%s]  [DCD] waiting...\n", dbg_ts());
                 while (g_running && demod.dcd())
-                    usleep(5000);
+                    usleep(10000);
+                if (!g_running) break;
                 if (cfg.debug_level >= 2)
                     fprintf(stderr, "[%s]  [DCD] clear\n", dbg_ts());
-            }
 
-            // ── SETTLE: 20ms squelch tail guard ──
-            usleep(20000);
+                // Settle: squelch tail guard
+                usleep(20000);
+
+                // Check DCD again after settle
+                if (demod.dcd()) goto csma_restart;
+
+                // P-persistence slots
+                for (;;) {
+                    usleep(cfg.slottime * 10000);  // slottime in 10ms units
+                    if (!g_running) break;
+                    if (demod.dcd()) {
+                        if (cfg.debug_level >= 2)
+                            fprintf(stderr, "[%s]  [CSMA] DCD during slot, restart\n", dbg_ts());
+                        goto csma_restart;
+                    }
+                    if ((rand() & 0xFF) <= cfg.persist) {
+                        if (cfg.debug_level >= 2)
+                            fprintf(stderr, "[%s]  [CSMA] transmit (persist=%d)\n",
+                                    dbg_ts(), cfg.persist);
+                        break;
+                    }
+                }
+            }
 
             // ── BATCH: drain the full queue in one go ──
             std::vector<std::vector<uint8_t>> batch;

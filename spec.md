@@ -34,19 +34,54 @@ Minimum preamble: `max(cfg.txdelay × baud / 800, 15)` flags.
 `std::deque<std::vector<uint8_t>>` — unbounded FIFO, bounded only by RAM.
 Frames are never dropped; clients (PTY or TCP) may enqueue at any time.
 
+#### CSMA/CA — p-persistence carrier sense
+
+Standard half-duplex collision avoidance (same algorithm as Dire Wolf):
+
+```
+DCD_WAIT    poll demod.dcd() every 10ms until channel clear
+SETTLE      20ms squelch tail guard
+            if DCD returns during settle → restart DCD_WAIT
+CSMA        loop:
+              sleep(slottime × 10ms)       — default 100ms
+              if DCD active → restart DCD_WAIT
+              if rand()&0xFF <= persist → break (transmit)
+              else → wait another slot
+```
+
+Parameters from CLI (`--persist N`, `--slottime N`), never from KISS clients.
+Default: persist=63 (≈25% per slot), slottime=10 (100ms).
+
+Probability distribution (persist=63, slottime=100ms):
+- 100ms: 25.0% — 200ms: 18.7% — 300ms: 14.1% — 400ms: 10.5%
+
+Full-duplex mode (`kp.fullduplex`) bypasses CSMA entirely.
+
 #### TX thread state machine
 
 ```
 WAIT_WORK   cv.wait until queue non-empty
-DCD_WAIT    poll demod.dcd() every 5ms until channel clear
-SETTLE      20ms fixed (squelch tail)
-BATCH       pop frames until queue empty OR P=1 frame reached (inclusive)
+DCD_WAIT    poll demod.dcd() every 10ms until channel clear
+SETTLE      20ms fixed (squelch tail), recheck DCD
+CSMA        p-persistence slots (slottime × 10ms each)
+            DCD during slot → restart DCD_WAIT
+BATCH       pop all queued frames
 MODULATE    txdelay preamble + frame(s) + txtail silence
 TX          PTT ON → write → wait_drain → PTT OFF
 COOLDOWN    50ms hard guard — no re-key
             → queue non-empty? → DCD_WAIT (cv.wait predicate skips block)
             → queue empty?     → WAIT_WORK
 ```
+
+#### ax25lib turnaround delay (existing)
+
+`Router::route()` sets `tx_next_ = now + txdelay×10ms` on every received frame.
+`drain_tx()` holds queued responses (RR, UA) until `tx_next_` elapses.
+This prevents the host from responding before the remote has switched TX→RX.
+
+With CSMA/CA now in kiss_modem, the turnaround is conservative but correct:
+total response time = ax25lib turnaround + CSMA slots + txdelay preamble.
+The ax25lib delay is kept because it also applies to hardware TNCs without CSMA.
 
 #### P/F bit — not inspected
 
