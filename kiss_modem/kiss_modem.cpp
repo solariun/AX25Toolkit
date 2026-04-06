@@ -61,6 +61,7 @@ struct Config {
     int         txtail        = 10;   // in 10ms units (10 = 100ms)
     int         persist       = 63;
     int         slottime      = 10;   // in 10ms units (10 = 100ms)
+    int         dwait         = 0;    // post-RX holdoff in ms (0 = auto: 1500ms @1200, 500ms @9600)
     int         volume        = 50;
     bool        list_devices  = false;
     bool        test_ptt      = false;
@@ -130,6 +131,35 @@ static int create_tcp_server(int port) {
     listen(fd, 4);
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     return fd;
+}
+
+// ---------------------------------------------------------------------------
+//  Queue supersession — replace queued S-frames for the same connection
+// ---------------------------------------------------------------------------
+// AX.25 S-frame (RR/REJ/RNR) control byte: bit0=1, bit1=0 → (ctrl & 0x03)==0x01
+// Address block ends at the byte where bit0=1 (HDLC address extension bit).
+static bool can_supersede(const std::vector<uint8_t>& queued,
+                          const std::vector<uint8_t>& incoming)
+{
+    if (queued.size() < 15 || incoming.size() < 15) return false;
+
+    // Find control byte offset: address fields are 7-byte blocks,
+    // last block has bit0=1 on its final (SSID) byte.
+    int q_ctrl = -1, i_ctrl = -1;
+    for (size_t j = 6; j < queued.size() && j < 70; j += 7)
+        if (queued[j] & 0x01) { q_ctrl = (int)j + 1; break; }
+    for (size_t j = 6; j < incoming.size() && j < 70; j += 7)
+        if (incoming[j] & 0x01) { i_ctrl = (int)j + 1; break; }
+
+    if (q_ctrl < 0 || i_ctrl < 0 || q_ctrl != i_ctrl) return false;
+    if ((size_t)q_ctrl >= queued.size() || (size_t)i_ctrl >= incoming.size()) return false;
+
+    // Both must be S-frames
+    if ((queued[q_ctrl] & 0x03) != 0x01) return false;
+    if ((incoming[i_ctrl] & 0x03) != 0x01) return false;
+
+    // Same address block → same connection + direction
+    return memcmp(queued.data(), incoming.data(), q_ctrl) == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +244,7 @@ static void usage() {
         "  --txtail N        TX tail (default: 10 = 100ms)\n"
         "  --persist N       CSMA persistence 0-255 (default: 63)\n"
         "  --slottime N      CSMA slot time (default: 10 = 100ms)\n"
+        "  --dwait N         Post-RX holdoff in ms (default: auto 1500@1200, 500@9600)\n"
         "\n"
         "Display:\n"
         "  -c CALL           Callsign (shown in monitor output)\n"
@@ -270,6 +301,7 @@ static Config parse_args(int argc, char* argv[]) {
         {"cat-tx-off",   required_argument, nullptr, 15},
         {"test-ptt",     no_argument,       nullptr, 16},
         {"test-tx",      required_argument, nullptr, 17},
+        {"dwait",        required_argument, nullptr, 19},
         {"debug",        required_argument, nullptr, 18},
         {"help",        no_argument,       nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
@@ -325,6 +357,7 @@ static Config parse_args(int argc, char* argv[]) {
                 cfg.debug_level = (lvl >= 1 && lvl <= 3) ? lvl : 1;
                 break;
             }
+            case 19:  cfg.dwait = atoi(optarg); break;
             case 'h': usage(); exit(0);
             default:  usage(); exit(1);
         }
@@ -335,6 +368,10 @@ static Config parse_args(int argc, char* argv[]) {
     // Auto-select sample rate for 9600 baud if user didn't specify
     if (cfg.baud >= 9600 && cfg.sample_rate == 44100)
         cfg.sample_rate = 96000;
+
+    // Auto DWAIT: allow remote to finish a window burst before we respond
+    if (cfg.dwait == 0)
+        cfg.dwait = (cfg.baud <= 1200) ? 1500 : 500;
 
     return cfg;
 }
@@ -595,16 +632,35 @@ static void run_bridge(const Config& cfg) {
     // echoes it back to the host — corrupting the AX.25 state machine.
     std::atomic<bool> tx_active{false};
 
+    // Last RX timestamp — used by DWAIT to avoid keying up mid-burst
+    auto now_ms = []() -> long long {
+        auto tp = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            tp.time_since_epoch()).count();
+    };
+    std::atomic<long long> last_rx_ts{0};
+
     // Wire RX: demod bit → HDLC → frame → KISS encode → PTY/TCP
     demod.set_on_bit([&hdlc_dec](int bit) { hdlc_dec.receive_bit(bit); });
 
     hdlc_dec.set_on_frame([&](const uint8_t* data, size_t len) {
         // Suppress self-echo: drop any frame decoded while TX is active
         if (tx_active.load(std::memory_order_acquire)) {
-            if (cfg.debug_level >= 2)
-                fprintf(stderr, "[%s]  [RX] dropped echo frame (%zu bytes)\n", dbg_ts(), len);
+            if (cfg.debug_level >= 1) {
+                std::vector<uint8_t> raw(data, data + len);
+                ax25::Frame ef;
+                if (ax25::Frame::decode(raw, ef))
+                    fprintf(stderr, "[%s]  [RX] dropped echo: %s\n", dbg_ts(), ef.format().c_str());
+                else
+                    fprintf(stderr, "[%s]  [RX] dropped echo (%zu bytes, decode failed)\n", dbg_ts(), len);
+                if (cfg.debug_level >= 2)
+                    fprintf(stderr, "%s", hex_dump(data, len, "           ").c_str());
+            }
             return;
         }
+
+        // Stamp last RX time for DWAIT
+        last_rx_ts.store(now_ms(), std::memory_order_release);
 
         if (cfg.monitor) show_frame(data, len, "<- AIR");
 
@@ -629,18 +685,33 @@ static void run_bridge(const Config& cfg) {
     kp.txtail   = cfg.txtail;
 
     // ── TX queue + thread ──────────────────────────────────────────────────
-    // KISS-dumb: modem does not inspect AX.25 content — that is the application's job.
+    // State machine per frame:
+    //   WAIT_WORK → DWAIT → DCD_WAIT → SETTLE → CSMA → DEQUEUE →
+    //   MODULATE → PTT ON → write → drain → PTT OFF → COOLDOWN → loop
     //
-    // State machine per burst:
-    //   WAIT_WORK → DCD_WAIT → 20ms settle → BATCH → MODULATE →
-    //   PTT ON → write → drain → PTT OFF → 50ms cooldown → loop
-    //
-    // Timing authority: cfg.txdelay / cfg.txtail always.
-    // KISS parameter commands from clients are stored in kp but never used for timing.
+    // DWAIT prevents keying up in gaps between I-frames in a window burst.
+    // CSMA uses exponential backoff on DCD collisions.
+    // Queue supersession replaces queued S-frames for the same connection.
     //
     std::mutex tx_queue_mtx;
     std::condition_variable tx_queue_cv;
     std::deque<std::vector<uint8_t>> tx_queue;
+
+    // Enqueue with S-frame supersession: returns queue depth after enqueue
+    auto enqueue_frame = [&](const std::vector<uint8_t>& data) -> size_t {
+        std::lock_guard<std::mutex> lk(tx_queue_mtx);
+        for (auto& queued : tx_queue) {
+            if (can_supersede(queued, data)) {
+                if (cfg.debug_level >= 2)
+                    fprintf(stderr, "[%s]  [QUEUE] supersede S-frame (%zu->%zu bytes)\n",
+                            dbg_ts(), queued.size(), data.size());
+                queued = data;
+                return tx_queue.size();
+            }
+        }
+        tx_queue.push_back(data);
+        return tx_queue.size();
+    };
 
     std::thread tx_thread([&]() {
         srand((unsigned)time(nullptr));  // seed CSMA p-persistence RNG
@@ -659,13 +730,38 @@ static void run_bridge(const Config& cfg) {
                 if (!g_running) break;
             }
 
-            // ── CSMA/CA: p-persistence carrier sense (Dire Wolf algorithm) ──
-            // 1. Wait for DCD clear
-            // 2. 20ms squelch tail settle
-            // 3. P-persistence: each slottime, transmit with prob persist/256
-            //    If DCD returns during wait, restart from step 1
+            // ── CSMA/CA: DWAIT + p-persistence + exponential backoff ──
+            //
+            // 1. DWAIT: if a frame was received recently, wait until dwait ms
+            //    have elapsed since the last RX — prevents keying up in the
+            //    gap between back-to-back I-frames in a window burst.
+            // 2. DCD_WAIT: poll DCD every 10ms until channel clear.
+            // 3. SETTLE: 20ms squelch tail guard.
+            // 4. CSMA: p-persistence slots.  DCD during slot → restart from 2.
+            //    Each collision (DCD restart) halves effective persist (backoff).
+            //    Backoff resets to base persist on successful TX.
+            //
             if (!kp.fullduplex) {
+                int collision_count = 0;
+
             csma_restart:
+                // ── DWAIT: post-RX holdoff ──
+                {
+                    long long rx_ts = last_rx_ts.load(std::memory_order_acquire);
+                    if (rx_ts > 0) {
+                        long long elapsed = now_ms() - rx_ts;
+                        if (elapsed < cfg.dwait) {
+                            long long remain = cfg.dwait - elapsed;
+                            if (cfg.debug_level >= 2)
+                                fprintf(stderr, "[%s]  [DWAIT] %lld ms remaining\n",
+                                        dbg_ts(), remain);
+                            usleep((unsigned)(remain * 1000));
+                            if (!g_running) break;
+                        }
+                    }
+                }
+
+                // ── DCD_WAIT ──
                 if (cfg.debug_level >= 2 && demod.dcd())
                     fprintf(stderr, "[%s]  [DCD] waiting...\n", dbg_ts());
                 while (g_running && demod.dcd())
@@ -674,58 +770,61 @@ static void run_bridge(const Config& cfg) {
                 if (cfg.debug_level >= 2)
                     fprintf(stderr, "[%s]  [DCD] clear\n", dbg_ts());
 
-                // Settle: squelch tail guard
+                // ── SETTLE: squelch tail guard ──
                 usleep(20000);
-
-                // Check DCD again after settle
                 if (demod.dcd()) goto csma_restart;
 
-                // P-persistence slots
-                for (;;) {
-                    usleep(cfg.slottime * 10000);  // slottime in 10ms units
-                    if (!g_running) break;
-                    if (demod.dcd()) {
-                        if (cfg.debug_level >= 2)
-                            fprintf(stderr, "[%s]  [CSMA] DCD during slot, restart\n", dbg_ts());
-                        goto csma_restart;
-                    }
-                    if ((rand() & 0xFF) <= cfg.persist) {
-                        if (cfg.debug_level >= 2)
-                            fprintf(stderr, "[%s]  [CSMA] transmit (persist=%d)\n",
-                                    dbg_ts(), cfg.persist);
-                        break;
+                // ── P-persistence with exponential backoff ──
+                {
+                    int eff_persist = cfg.persist >> std::min(collision_count, 3);
+                    for (;;) {
+                        usleep(cfg.slottime * 10000);
+                        if (!g_running) break;
+                        if (demod.dcd()) {
+                            collision_count++;
+                            if (cfg.debug_level >= 2)
+                                fprintf(stderr, "[%s]  [CSMA] DCD during slot, backoff=%d, restart\n",
+                                        dbg_ts(), collision_count);
+                            goto csma_restart;
+                        }
+                        if ((rand() & 0xFF) <= eff_persist) {
+                            if (cfg.debug_level >= 2)
+                                fprintf(stderr, "[%s]  [CSMA] transmit (persist=%d eff=%d backoff=%d)\n",
+                                        dbg_ts(), cfg.persist, eff_persist, collision_count);
+                            collision_count = 0;  // reset on successful transmit
+                            break;
+                        }
                     }
                 }
             }
 
-            // ── BATCH: drain the full queue in one go ──
-            std::vector<std::vector<uint8_t>> batch;
+            // ── DEQUEUE: pop one frame ──
+            std::vector<uint8_t> frame;
+            size_t depth;
             {
                 std::lock_guard<std::mutex> lk(tx_queue_mtx);
-                batch.reserve(tx_queue.size());
-                while (!tx_queue.empty()) {
-                    batch.push_back(std::move(tx_queue.front()));
-                    tx_queue.pop_front();
-                }
+                if (tx_queue.empty()) continue;
+                frame = std::move(tx_queue.front());
+                tx_queue.pop_front();
+                depth = tx_queue.size();
             }
-            if (batch.empty()) continue;
+            if (cfg.debug_level >= 2)
+                fprintf(stderr, "[%s]  [QUEUE] dequeue %zu bytes, remaining=%zu\n",
+                        dbg_ts(), frame.size(), depth);
 
-            // ── MODULATE: preamble + frames + tail ──
+            // ── MODULATE: preamble + frame + tail ──
             int preamble_flags = cfg.txdelay * cfg.baud / (8 * 100);
             if (preamble_flags < 15) preamble_flags = 15;
 
             tx_audio.clear();
-            for (size_t i = 0; i < batch.size(); i++) {
-                int flags = (i == 0) ? preamble_flags : 3;
-                hdlc_enc.send_frame(batch[i].data(), batch[i].size(), flags, 2);
-            }
+            hdlc_enc.send_frame(frame.data(), frame.size(), preamble_flags, 2);
             modulator.put_quiet_ms(cfg.txtail * 10);
 
             if (tx_audio.empty()) continue;
 
             if (cfg.debug_level >= 1)
-                fprintf(stderr, "[%s]  [TX] burst: %zu frame(s), %zu samples (%.0f ms)\n",
-                        dbg_ts(), batch.size(), tx_audio.size(),
+                fprintf(stderr, "[%s]  [TX] frame: %zu bytes, %zu samples (%.0f ms)\n",
+                        dbg_ts(), frame.size(), tx_audio.size(),
                         1000.0 * tx_audio.size() / actual_rate);
 
             // ── TX: PTT ON → write → drain → PTT OFF ──
@@ -808,12 +907,7 @@ static void run_bridge(const Config& cfg) {
                         if (cfg.debug_level >= 1)
                             fprintf(stderr, "[%s]  [TX] <- pty: %zu bytes\n", dbg_ts(), kf.data.size());
                         if (cfg.monitor) show_frame(kf.data.data(), kf.data.size(), "-> AIR");
-                        size_t depth;
-                        {
-                            std::lock_guard<std::mutex> lk(tx_queue_mtx);
-                            tx_queue.push_back(kf.data);
-                            depth = tx_queue.size();
-                        }
+                        size_t depth = enqueue_frame(kf.data);
                         tx_queue_cv.notify_one();
                         if (cfg.debug_level >= 2)
                             fprintf(stderr, "[%s]  [QUEUE] +1 frame (%zu bytes), depth=%zu\n",
@@ -849,11 +943,11 @@ static void run_bridge(const Config& cfg) {
                         if (cfg.debug_level >= 1)
                             fprintf(stderr, "[%s]  [TX] <- tcp: %zu bytes\n", dbg_ts(), kf.data.size());
                         if (cfg.monitor) show_frame(kf.data.data(), kf.data.size(), "-> AIR");
-                        {
-                            std::lock_guard<std::mutex> lk(tx_queue_mtx);
-                            tx_queue.push_back(kf.data);
-                        }
+                        size_t depth = enqueue_frame(kf.data);
                         tx_queue_cv.notify_one();
+                        if (cfg.debug_level >= 2)
+                            fprintf(stderr, "[%s]  [QUEUE] +1 frame (%zu bytes), depth=%zu\n",
+                                    dbg_ts(), kf.data.size(), depth);
                     }
                 }
             }

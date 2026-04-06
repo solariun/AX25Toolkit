@@ -262,6 +262,7 @@ struct Config {
     int mtu     = 128;                // max info bytes per I-frame
     int window  = 3;                  // max outstanding I-frames (K, 1-7)
     int t1_ms   = 15000;              // retransmit timer ms (min, see compute_t1)
+    int t2_ms   = 200;               // delayed-ACK timer ms (coalesces RR frames)
     int t3_ms   = 60000;              // keep-alive / inactivity timer ms
     int n2      = 10;                 // max retransmissions before link-fail
     int baud    = 9600;               // link speed (for dynamic T1 computation)
@@ -407,6 +408,8 @@ private:
     // Timer helpers — simple fixed timers like KISSet
     void start_t1(Millis now) { t1_exp_ = now + cfg_.compute_t1(); t1_run_ = true; }
     void stop_t1()            { t1_run_=false; }
+    void start_t2(Millis now) { t2_exp_=now+cfg_.t2_ms; t2_run_=true; }
+    void stop_t2()            { t2_run_=false; ack_pending_=false; }
     void start_t3(Millis now) { t3_exp_=now+cfg_.t3_ms; t3_run_=true; }
     void stop_t3()            { t3_run_=false; }
     void reset_t3(Millis now) { t3_exp_=now+cfg_.t3_ms; t3_run_=true; }
@@ -422,8 +425,10 @@ private:
 
     // Timers
     bool   t1_run_=false; Millis t1_exp_=0;
+    bool   t2_run_=false; Millis t2_exp_=0;   // delayed-ACK timer
     bool   t3_run_=false; Millis t3_exp_=0;
     bool   poll_pending_=false;
+    bool   ack_pending_=false;                 // T2: I-frame received, ACK deferred
 
     // Flow control
     bool   peer_busy_=false;            // remote sent RNR — stop transmitting

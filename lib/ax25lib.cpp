@@ -436,7 +436,8 @@ void Connection::tx_iframe(int ns, int nr, bool pf,
     f.has_pid = true;
     f.info    = std::vector<uint8_t>(d, d + len);
     router_->send_frame(f);
-    // I-frame piggybacks NR — no separate RR needed
+    // I-frame piggybacks NR — clears any pending delayed ACK
+    if (ack_pending_) stop_t2();
 }
 
 // =============================================================================
@@ -503,6 +504,7 @@ void Connection::link_failed() {
 void Connection::start_connect(Millis now) {
     vs_ = vr_ = va_ = retry_ = 0;
     peer_busy_ = false; rx_since_ack_ = 0; poll_sent_ = 0;
+    stop_t2();
     state_ = State::CONNECTING;
     tx_sabm();
     start_t1(now);
@@ -524,7 +526,7 @@ bool Connection::send(const uint8_t* data, std::size_t len) {
 
 void Connection::disconnect() {
     if (state_ == State::DISCONNECTED || state_ == State::DISCONNECTING) return;
-    stop_t3();
+    stop_t2(); stop_t3();
     state_ = State::DISCONNECTING;
     retry_ = 0;
     send_buf_.clear();
@@ -544,6 +546,7 @@ void Connection::handle_frame(const Frame& f, Millis now) {
         if (t == Frame::Type::SABM) {
             vs_ = vr_ = va_ = retry_ = 0;
             peer_busy_ = false; rx_since_ack_ = 0;
+            stop_t2();
             tx_ua(f.get_pf());
             state_ = State::CONNECTED;
             start_t3(now);
@@ -556,7 +559,7 @@ void Connection::handle_frame(const Frame& f, Millis now) {
     // ────────────────────────────────────────────────────────────────────────
     case State::CONNECTING:
         if (t == Frame::Type::UA) {
-            stop_t1();
+            stop_t1(); stop_t2();
             vs_ = vr_ = va_ = retry_ = 0;
             state_ = State::CONNECTED;
             start_t3(now);
@@ -589,7 +592,7 @@ void Connection::handle_frame(const Frame& f, Millis now) {
         if (t == Frame::Type::SABM) {
             // Re-connect from peer: reset and ack
             vs_ = vr_ = va_ = 0;
-            peer_busy_ = false;
+            peer_busy_ = false; stop_t2();
             unacked_.clear(); send_buf_.clear();
             tx_ua(f.get_pf());
             return;
@@ -599,20 +602,26 @@ void Connection::handle_frame(const Frame& f, Millis now) {
         if (t == Frame::Type::IFrame) {
             process_nr(f.get_nr(), now);
             if (f.get_ns() == vr_) {
-                // In-sequence: accept and ACK immediately.
-                // Must ACK every frame because we don't know the
-                // remote's window size (could be 1).
+                // In-sequence: accept.
                 vr_ = (vr_ + 1) & 7;
                 if (on_data && !f.info.empty())
                     on_data(f.info.data(), f.info.size());
-                tx_rr(f.get_pf());
+                if (f.get_pf()) {
+                    // P=1 poll: must respond with F=1 immediately
+                    stop_t2();
+                    tx_rr(true);
+                } else {
+                    // Delayed ACK: arm T2 to coalesce back-to-back I-frames
+                    ack_pending_ = true;
+                    start_t2(now);
+                }
             } else {
-                // Out-of-sequence or duplicate: REJ to request retransmit
+                // Out-of-sequence or duplicate: REJ to request retransmit.
+                // REJ carries NR and P/F — no separate RR needed.
                 rx_since_ack_ = 0;
-                tx_rr(f.get_pf());
                 Frame rej;
                 rej.dest = remote_; rej.src = local_;
-                rej.ctrl = mk_rej(vr_, false);
+                rej.ctrl = mk_rej(vr_, f.get_pf());
                 rej.has_pid = false;
                 router_->send_frame(rej);
             }
@@ -668,6 +677,15 @@ void Connection::handle_frame(const Frame& f, Millis now) {
 // Connection — timer tick
 // =============================================================================
 void Connection::tick(Millis now) {
+    // T2 — delayed ACK: coalesce multiple I-frame ACKs into one RR
+    if (t2_run_ && now >= t2_exp_) {
+        t2_run_ = false;
+        if (ack_pending_ && state_ == State::CONNECTED) {
+            ack_pending_ = false;
+            tx_rr(false);
+        }
+    }
+
     // T1 — retransmit / retry
     if (t1_run_ && now >= t1_exp_) {
         t1_run_ = false;
@@ -772,16 +790,14 @@ bool Router::tx(const Frame& f) {
 }
 
 void Router::drain_tx(Millis now) {
+    // Flush all frames that are past the turnaround delay.
+    // No inter-frame pacing: the TNC/modem handles RF timing
+    // (txdelay preamble, CSMA slots) for each frame it transmits.
     while (!tx_queue_.empty()) {
-        if (now < tx_next_) return;            // waiting for TXDELAY pause
+        if (now < tx_next_) return;            // turnaround not elapsed yet
 
         kiss_.send_frame(std::move(tx_queue_.front()));
         tx_queue_.pop_front();
-
-        // One frame, then pause TXDELAY before the next.
-        // Gives the remote side time to respond between frames.
-        if (!tx_queue_.empty())
-            tx_next_ = now + (Millis)(cfg_.txdelay * 10);
     }
 }
 
